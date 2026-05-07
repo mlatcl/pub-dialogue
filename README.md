@@ -2,29 +2,54 @@
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mlatcl/pub-dialogue/blob/main/public_dialogue_analyser_v12b_4.ipynb)
 
-Analysis of UK public dialogue documents on science and technology, identifying shared concerns and benefits across technologies and tracking how public dialogue about AI changes over time.
+## What this project does
 
-## Quick start
+This project applies large language model (LLM) text extraction and unsupervised
+clustering to a corpus of 66 UK public dialogue reports, spanning 2004–2025 and
+covering technologies including AI, gene editing, nanotechnology, nuclear energy,
+geoengineering, drones, and quantum technologies.
 
-Click the badge above to open the notebook directly in Google Colab. The first cell installs dependencies and fetches `dialogue_utils.py` automatically.
+The goal is to ask: **what do members of the public consistently say they are
+concerned about, or see as beneficial, when asked about new and emerging technologies —
+and how cross-cutting are those themes?**
 
-### Loading the PDF corpus
+The analysis pipeline:
 
-The notebook supports two modes for loading the 66 source PDFs:
+1. **Extracts** concern and benefit phrases from each paragraph in each report
+   using a structured LLM prompt (GPT-4o).
+2. **Embeds** the extracted phrases using the OpenAI embeddings API.
+3. **Clusters** the embeddings (k-means) to identify recurring themes.
+4. **Labels** each cluster using the LLM, producing human-readable summaries.
+5. **Characterises** clusters as either cross-cutting (appearing across many
+   technologies) or technology-specific (concentrated in one or two domains),
+   using Shannon entropy over the technology distribution.
+6. **Tracks** how concern and benefit themes vary over time (by dialogue year)
+   and across technology domains.
 
-**Option A — Public Google Drive folder (recommended)**
+The work contributes to a research paper on the structure of public attitudes
+towards science and technology in the UK.
 
-1. Upload the PDF corpus and metadata Excel to a Google Drive folder
-2. Share the folder: right-click → Share → **Anyone with the link → Viewer**
-3. Copy the folder ID from the URL (`drive.google.com/drive/folders/`**`<ID>`**)
-4. In cell "Load PDF corpus", set `CORPUS_FOLDER_ID = "<your folder ID>"`
-5. Do the same for `METADATA_FILE_ID` (the file ID of the metadata Excel)
+## Data
 
-The notebook will then download everything automatically via `gdown` — no sign-in required.
+The corpus consists of 66 publicly available UK public dialogue reports, held in
+a shared Google Drive folder:
 
-**Option B — Manual upload**
+- **PDFs**: [Public dialogue PDFs on Google Drive](https://drive.google.com/drive/folders/1WhTZE4kaNO5rBikDgNVsTe1INpdzNEJt?usp=sharing)
+- **Metadata**: [tech_metadata Google Sheet](https://docs.google.com/spreadsheets/d/1fWE5Agm4LStCcZZQqvmgamIanhYyfrcb/edit?usp=share_link) — maps each PDF to its technology category and year
 
-Leave `CORPUS_FOLDER_ID = None`. The cell falls back to `files.upload()`, where you can select all PDFs at once.
+The notebook downloads both automatically when run in Colab. No manual upload is
+needed.
+
+## Quick start (Google Colab)
+
+Click the badge above. The notebook will:
+
+1. Install Python dependencies (`PyMuPDF`, `openai`, `scikit-learn`, etc.)
+2. Fetch `dialogue_utils.py` from this repository
+3. Download the PDF corpus and metadata from Google Drive
+
+You will need to provide an **OpenAI API key** (stored as a Colab secret named
+`OPENAI_API_KEY`, or pasted when prompted).
 
 ## Repository structure
 
@@ -32,10 +57,10 @@ Leave `CORPUS_FOLDER_ID = None`. The cell falls back to `files.upload()`, where 
 |------|----------|
 | `public_dialogue_analyser_v12b_4.ipynb` | Main analysis notebook |
 | `dialogue_utils.py` | Shared utility functions (imported by the notebook) |
-| `tests/` | pytest test suite for `dialogue_utils.py` (103 tests) |
-| `validation_playbook.md` | Researcher guide for reviewing analysis outputs |
-| `cip/` | Code Improvement Plans |
-| `backlog/` | Task tracking |
+| `tests/` | pytest suite for `dialogue_utils.py` (103 tests) |
+| `validation_playbook.md` | Researcher guide for reviewing and validating outputs |
+| `cip/` | Code Improvement Plans — design decisions and implementation tracking |
+| `backlog/` | Task tracking — bugs and features |
 | `requirements/` | Project requirements |
 
 ## Running locally
@@ -54,6 +79,36 @@ pip install pytest
 pytest tests/
 ```
 
+## Analysis outputs
+
+Running the full notebook produces a ZIP export containing:
+
+| File | Description |
+|------|-------------|
+| `concern_phrases.csv` | All extracted concern phrases with source chunk and document |
+| `benefit_phrases.csv` | All extracted benefit phrases |
+| `concern_clusters_k*.csv` | Cluster assignments at each k |
+| `benefit_clusters_k*.csv` | Cluster assignments at each k |
+| `concern_labels_k*.json` | LLM-generated cluster labels |
+| `benefit_labels_k*.json` | LLM-generated cluster labels |
+| `extraction_yield_summary.csv` | Per-document extraction yield statistics |
+| `tech_filter_drops_*.csv` | Phrases dropped by the technology-word filter |
+| `extraction_errors_*.csv` | Chunks where the LLM returned an error |
+| `concern_vocab_frequency.csv` | Top unigram/bigram vocabulary in concern phrases |
+| `benefit_vocab_frequency.csv` | Top unigram/bigram vocabulary in benefit phrases |
+| `validation_summary.txt` | Key counts and file checklist for result validation |
+| `validation_playbook.md` | Researcher guide (copy of repository file) |
+
 ## Project management
 
-This project uses [VibeSafe](https://github.com/lawrennd/vibesafe) for structured project management (CIPs, backlog, requirements).
+This project uses [VibeSafe](https://github.com/lawrennd/vibesafe) for
+structured project management. The development workflow is:
+
+- **Tenets** — guiding principles
+- **Requirements** (`requirements/`) — what the system should do
+- **CIPs** (`cip/`) — how we are going to do it (design plans)
+- **Backlog** (`backlog/`) — concrete tasks in progress or queued
+
+Current open CIPs address: chunk extraction filter correctness, technology
+metadata leak in cluster labelling, prompt sensitivity analysis, and temporal
+analysis normalisation. See `cip/README.md` for the full list.
