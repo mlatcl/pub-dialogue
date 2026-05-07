@@ -40,6 +40,7 @@ from __future__ import annotations
 import html as _html
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -934,6 +935,91 @@ def run_sensitivity(
 
             html_content = f"<h2>{kind.capitalize()} Lens Salience (k={k})</h2>\n" + lens_df.to_html(index=False)
             (output_folder / f"{prefix}_radar_k{k}.html").write_text(html_content)
+
+
+# ---------------------------------------------------------------------------
+# Vocabulary frequency diagnostic — CIP-0004
+# ---------------------------------------------------------------------------
+
+def vocabulary_frequency_diagnostic(
+    phrases: List[str],
+    kind: str,
+    output_folder: Path,
+    meta_vocabulary: Optional[List[str]] = None,
+    top_n: int = 100,
+) -> pd.DataFrame:
+    """Compute unigram and bigram frequency for extracted phrases and flag meta-vocabulary.
+
+    Writes ``{kind}_vocab_frequency.csv`` to *output_folder* containing the
+    top-*top_n* terms ranked by frequency.  Terms that appear in
+    *meta_vocabulary* (or :data:`META_VOCABULARY` by default) are marked with
+    ``is_meta_vocab=True``.
+
+    Parameters
+    ----------
+    phrases:
+        List of extracted phrase strings (e.g. ``concerns_df["concern"].tolist()``).
+    kind:
+        ``"concern"`` or ``"benefit"`` — used in the output filename.
+    output_folder:
+        Directory where the CSV is written.
+    meta_vocabulary:
+        Override the default :data:`META_VOCABULARY` list.
+    top_n:
+        How many top terms to include in the CSV.
+
+    Returns
+    -------
+    pd.DataFrame
+        The frequency table (also written to disk).
+    """
+    output_folder = Path(output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
+
+    if meta_vocabulary is None:
+        meta_vocabulary = META_VOCABULARY
+
+    meta_set = {m.lower() for m in meta_vocabulary}
+
+    token_pattern = re.compile(r"\b[a-z]{3,}\b")
+
+    counts: Counter = Counter()
+    for phrase in phrases:
+        tokens = token_pattern.findall(phrase.lower())
+        counts.update(tokens)
+        # bigrams
+        for a, b in zip(tokens, tokens[1:]):
+            counts.update([f"{a} {b}"])
+
+    total_phrases = max(len(phrases), 1)
+    rows = []
+    for term, count in counts.most_common(top_n):
+        rows.append(
+            {
+                "term": term,
+                "count": count,
+                "pct_of_phrases": round(100 * count / total_phrases, 2),
+                "is_meta_vocab": term in meta_set,
+            }
+        )
+
+    _cols = ["term", "count", "pct_of_phrases", "is_meta_vocab"]
+    df = pd.DataFrame(rows, columns=_cols) if rows else pd.DataFrame(columns=_cols)
+    out_path = output_folder / f"{kind}_vocab_frequency.csv"
+    df.to_csv(out_path, index=False)
+
+    # --- console report ---
+    flagged = df[df["is_meta_vocab"]]
+    print(f"\n[{kind}] Vocabulary frequency diagnostic — top {top_n} terms written to {out_path}")
+    print(f"  Total phrases analysed : {total_phrases}")
+    if flagged.empty:
+        print("  No meta-vocabulary terms in top terms.")
+    else:
+        print(f"  Meta-vocabulary terms found ({len(flagged)}):")
+        for _, row in flagged.iterrows():
+            print(f"    '{row['term']}': {row['count']} occurrences ({row['pct_of_phrases']}% of phrases)")
+
+    return df
 
 
 # ---------------------------------------------------------------------------

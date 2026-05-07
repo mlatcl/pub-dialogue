@@ -292,6 +292,108 @@ class TestWriteExtractionDiagnostics:
 
 
 # ===========================================================================
+# vocabulary_frequency_diagnostic — CIP-0004
+# ===========================================================================
+
+class TestVocabularyFrequencyDiagnostic:
+    """Tests for the CIP-0004 vocabulary frequency diagnostic."""
+
+    def _sample_phrases(self):
+        return [
+            "public dialogue concerns about safety",
+            "public dialogue lack of transparency",
+            "unfair automated decisions",
+            "loss of employment opportunities",
+            "public dialogue process not inclusive",
+            "data privacy risks",
+            "public engagement inadequate",
+            "risk of job displacement",
+        ]
+
+    def test_csv_created(self, tmp_path):
+        du.vocabulary_frequency_diagnostic(
+            self._sample_phrases(), kind="concern", output_folder=tmp_path
+        )
+        assert (tmp_path / "concern_vocab_frequency.csv").exists()
+
+    def test_returns_dataframe(self, tmp_path):
+        df = du.vocabulary_frequency_diagnostic(
+            self._sample_phrases(), kind="concern", output_folder=tmp_path
+        )
+        assert isinstance(df, pd.DataFrame)
+        assert "term" in df.columns
+        assert "count" in df.columns
+        assert "pct_of_phrases" in df.columns
+        assert "is_meta_vocab" in df.columns
+
+    def test_meta_vocab_flagged(self, tmp_path):
+        df = du.vocabulary_frequency_diagnostic(
+            self._sample_phrases(), kind="concern", output_folder=tmp_path
+        )
+        flagged = df[df["is_meta_vocab"]]
+        assert not flagged.empty
+        flagged_terms = set(flagged["term"].tolist())
+        assert "public dialogue" in flagged_terms
+
+    def test_non_meta_vocab_not_flagged(self, tmp_path):
+        df = du.vocabulary_frequency_diagnostic(
+            self._sample_phrases(), kind="concern", output_folder=tmp_path
+        )
+        # "unfair" is not a meta-vocab term — check is_meta_vocab is False where it appears
+        row = df[df["term"] == "unfair"]
+        if not row.empty:
+            assert bool(row.iloc[0]["is_meta_vocab"]) is False
+
+    def test_benefit_kind_filename(self, tmp_path):
+        du.vocabulary_frequency_diagnostic(
+            ["efficiency gains", "cost savings"], kind="benefit", output_folder=tmp_path
+        )
+        assert (tmp_path / "benefit_vocab_frequency.csv").exists()
+
+    def test_top_n_respected(self, tmp_path):
+        phrases = [f"concern about topic {i}" for i in range(50)]
+        df = du.vocabulary_frequency_diagnostic(
+            phrases, kind="concern", output_folder=tmp_path, top_n=10
+        )
+        assert len(df) <= 10
+
+    def test_bigrams_included(self, tmp_path):
+        df = du.vocabulary_frequency_diagnostic(
+            self._sample_phrases(), kind="concern", output_folder=tmp_path
+        )
+        terms = df["term"].tolist()
+        # "public dialogue" is a bigram and should appear
+        assert "public dialogue" in terms
+
+    def test_pct_of_phrases_sane(self, tmp_path):
+        df = du.vocabulary_frequency_diagnostic(
+            self._sample_phrases(), kind="concern", output_folder=tmp_path
+        )
+        assert (df["pct_of_phrases"] >= 0).all()
+        assert (df["pct_of_phrases"] <= 100).all()
+
+    def test_empty_phrases_no_crash(self, tmp_path):
+        df = du.vocabulary_frequency_diagnostic(
+            [], kind="concern", output_folder=tmp_path
+        )
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 0
+
+    def test_custom_meta_vocabulary(self, tmp_path):
+        custom = ["job displacement"]
+        df = du.vocabulary_frequency_diagnostic(
+            ["risk of job displacement", "unfair automated decisions"],
+            kind="concern",
+            output_folder=tmp_path,
+            meta_vocabulary=custom,
+        )
+        flagged = df[df["is_meta_vocab"]]
+        flagged_terms = set(flagged["term"].tolist())
+        assert "job displacement" in flagged_terms
+        assert "public dialogue" not in flagged_terms
+
+
+# ===========================================================================
 # Checkpoint I/O
 # ===========================================================================
 

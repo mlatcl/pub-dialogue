@@ -1,7 +1,7 @@
 ---
 id: "2026-05-07_vocabulary-frequency-diagnostic"
 title: "Add vocabulary frequency diagnostic and inspect current outputs for meta-vocabulary"
-status: "Ready"
+status: "Completed"
 priority: "Medium"
 created: "2026-05-07"
 last_updated: "2026-05-07"
@@ -57,3 +57,9 @@ The goal is a simple, readable output — a CSV and a printed table are sufficie
 
 ### 2026-05-07
 Task created. Depends on `2026-05-07_write-extraction-yield-diagnostics` (needs tech_filter_drops.csv). Can also be run against existing extracted_concerns/benefits.csv without re-running extraction.
+
+### 2026-05-07 — Completed
+vocabulary_frequency_diagnostic() added to dialogue_utils.py.
+Computes unigram + bigram frequencies, flags META_VOCABULARY terms, writes
+{kind}_vocab_frequency.csv. Two notebook cells injected (cells 17 and 57).
+10 new tests added (95 total, all passing).

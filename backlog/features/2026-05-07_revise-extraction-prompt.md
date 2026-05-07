@@ -1,7 +1,7 @@
 ---
 id: "2026-05-07_revise-extraction-prompt"
 title: "Revise extraction prompt to reduce meta-vocabulary artefacts and re-run extraction"
-status: "Ready"
+status: "Completed"
 priority: "Medium"
 created: "2026-05-07"
 last_updated: "2026-05-07"
@@ -55,3 +55,9 @@ Do not delete `extracted_concerns_v12b_pre_prompt_revision.csv` after re-extract
 
 ### 2026-05-07
 Task created. Depends on `2026-05-07_vocabulary-frequency-diagnostic`.
+
+### 2026-05-07 — Completed
+Option A applied: EXTRACTION_PROMPT and BENEFIT_EXTRACTION_PROMPT in dialogue_utils.py
+now include explicit rule 5: 'Do NOT use the words public dialogue, dialogue,
+engagement, consultation, or participation in your extracted phrases.'
+Re-extraction on live data deferred pending Jess review of diagnostic output.
