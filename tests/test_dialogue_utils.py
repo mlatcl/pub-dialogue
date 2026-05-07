@@ -189,6 +189,109 @@ class TestExtractionResult:
 
 
 # ===========================================================================
+# write_extraction_diagnostics
+# ===========================================================================
+
+class TestWriteExtractionDiagnostics:
+    """Tests for the CIP-0001 diagnostic file writer."""
+
+    def _make_results(self):
+        return [
+            du.ExtractionResult(
+                chunk_id="c001",
+                raw_phrases=["privacy risks", "AI surveillance"],
+                retained_phrases=["privacy risks"],
+                dropped_by_filter=[("AI surveillance", "ai")],
+            ),
+            du.ExtractionResult(
+                chunk_id="c002",
+                sentinel_returned=True,
+            ),
+            du.ExtractionResult(
+                chunk_id="c003",
+                raw_phrases=["job displacement"],
+                retained_phrases=["job displacement"],
+            ),
+            du.ExtractionResult(
+                chunk_id="c004",
+                error="TimeoutError: request timed out",
+            ),
+        ]
+
+    def test_yield_summary_csv_created(self, tmp_path):
+        results = self._make_results()
+        du.write_extraction_diagnostics(results, kind="concern", output_folder=tmp_path)
+        summary = tmp_path / "extraction_yield_summary.csv"
+        assert summary.exists()
+        df = pd.read_csv(summary)
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["track"] == "concern"
+        assert row["total_chunks"] == 4
+        assert row["sentinel_empties"] == 1
+        assert row["error_chunks"] == 1
+        assert row["filter_drops_chunks"] == 1
+        assert row["filter_drops_total"] == 1
+        assert row["retained_phrases"] == 2
+
+    def test_filter_drops_csv_created(self, tmp_path):
+        results = self._make_results()
+        du.write_extraction_diagnostics(results, kind="concern", output_folder=tmp_path)
+        drops = tmp_path / "tech_filter_drops_concern.csv"
+        assert drops.exists()
+        df = pd.read_csv(drops)
+        assert len(df) == 1
+        assert df.iloc[0]["dropped_phrase"] == "AI surveillance"
+        assert df.iloc[0]["matching_tech_word"] == "ai"
+        assert df.iloc[0]["chunk_id"] == "c001"
+
+    def test_errors_csv_created(self, tmp_path):
+        results = self._make_results()
+        du.write_extraction_diagnostics(results, kind="concern", output_folder=tmp_path)
+        errors = tmp_path / "extraction_errors_concern.csv"
+        assert errors.exists()
+        df = pd.read_csv(errors)
+        assert len(df) == 1
+        assert df.iloc[0]["chunk_id"] == "c004"
+        assert "TimeoutError" in df.iloc[0]["error"]
+
+    def test_benefit_kind_uses_separate_files(self, tmp_path):
+        results = [du.ExtractionResult(chunk_id="b001", retained_phrases=["efficiency gains"])]
+        du.write_extraction_diagnostics(results, kind="benefit", output_folder=tmp_path)
+        assert (tmp_path / "tech_filter_drops_benefit.csv").exists()
+        assert (tmp_path / "extraction_errors_benefit.csv").exists()
+        df = pd.read_csv(tmp_path / "extraction_yield_summary.csv")
+        assert df.iloc[0]["track"] == "benefit"
+
+    def test_summary_appends_second_track(self, tmp_path):
+        concern_results = [du.ExtractionResult(chunk_id="c001", retained_phrases=["risk"])]
+        benefit_results = [du.ExtractionResult(chunk_id="b001", retained_phrases=["gain"])]
+        du.write_extraction_diagnostics(concern_results, kind="concern", output_folder=tmp_path)
+        du.write_extraction_diagnostics(benefit_results, kind="benefit", output_folder=tmp_path)
+        df = pd.read_csv(tmp_path / "extraction_yield_summary.csv")
+        assert len(df) == 2
+        assert set(df["track"]) == {"concern", "benefit"}
+
+    def test_summary_replaces_same_track_on_rerun(self, tmp_path):
+        results1 = [du.ExtractionResult(chunk_id="c001", retained_phrases=["risk"])]
+        results2 = [
+            du.ExtractionResult(chunk_id="c001", retained_phrases=["risk"]),
+            du.ExtractionResult(chunk_id="c002", retained_phrases=["job loss"]),
+        ]
+        du.write_extraction_diagnostics(results1, kind="concern", output_folder=tmp_path)
+        du.write_extraction_diagnostics(results2, kind="concern", output_folder=tmp_path)
+        df = pd.read_csv(tmp_path / "extraction_yield_summary.csv")
+        assert len(df) == 1  # same track, replaced not appended
+        assert df.iloc[0]["total_chunks"] == 2
+
+    def test_empty_results_writes_zero_row(self, tmp_path):
+        du.write_extraction_diagnostics([], kind="concern", output_folder=tmp_path)
+        df = pd.read_csv(tmp_path / "extraction_yield_summary.csv")
+        assert df.iloc[0]["total_chunks"] == 0
+        assert df.iloc[0]["retained_phrases"] == 0
+
+
+# ===========================================================================
 # Checkpoint I/O
 # ===========================================================================
 

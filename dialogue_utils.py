@@ -405,6 +405,92 @@ def extract_phrases(
         )
 
 
+def write_extraction_diagnostics(
+    results: List["ExtractionResult"],
+    kind: str,
+    output_folder: Path,
+) -> None:
+    """Write yield-diagnostic files after an extraction pass.
+
+    Produces three files in *output_folder*:
+
+    * ``extraction_yield_summary.csv`` — one row per (kind, run) with counts
+      of sentinels, filter drops, errors, and retained phrases.
+    * ``tech_filter_drops_{kind}.csv`` — one row per dropped phrase with the
+      matching tech-word substring.  Useful for checking filter over-reach.
+    * ``extraction_errors_{kind}.log`` — one row per chunk that raised an
+      exception during the API call.
+
+    Parameters
+    ----------
+    results:
+        List of :class:`ExtractionResult` objects from a completed extraction.
+    kind:
+        ``"concern"`` or ``"benefit"``.
+    output_folder:
+        Directory where output files are written.
+    """
+    output_folder = Path(output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
+
+    sentinel_chunks = sum(1 for r in results if r.sentinel_returned)
+    error_chunks = sum(1 for r in results if r.error is not None)
+    filter_drop_chunks = sum(1 for r in results if r.dropped_by_filter)
+    filter_drops_total = sum(len(r.dropped_by_filter) for r in results)
+    retained_total = sum(len(r.retained_phrases) for r in results)
+    total_chunks = len(results)
+
+    # --- yield summary (append so concern + benefit rows coexist) ---
+    summary_path = output_folder / "extraction_yield_summary.csv"
+    summary_row = {
+        "track": kind,
+        "total_chunks": total_chunks,
+        "sentinel_empties": sentinel_chunks,
+        "filter_drops_chunks": filter_drop_chunks,
+        "filter_drops_total": filter_drops_total,
+        "error_chunks": error_chunks,
+        "retained_phrases": retained_total,
+    }
+    summary_df = pd.DataFrame([summary_row])
+    if summary_path.exists():
+        existing = pd.read_csv(summary_path)
+        existing = existing[existing["track"] != kind]  # replace same-track row
+        summary_df = pd.concat([existing, summary_df], ignore_index=True)
+    summary_df.to_csv(summary_path, index=False)
+
+    # --- filter drop log ---
+    drop_rows = []
+    for r in results:
+        for phrase, matched_word in r.dropped_by_filter:
+            drop_rows.append({
+                "chunk_id": r.chunk_id,
+                "dropped_phrase": phrase,
+                "matching_tech_word": matched_word,
+            })
+    pd.DataFrame(drop_rows).to_csv(
+        output_folder / f"tech_filter_drops_{kind}.csv", index=False
+    )
+
+    # --- error log ---
+    error_rows = [
+        {"chunk_id": r.chunk_id, "track": kind, "error": r.error}
+        for r in results
+        if r.error is not None
+    ]
+    pd.DataFrame(error_rows).to_csv(
+        output_folder / f"extraction_errors_{kind}.csv", index=False
+    )
+
+    print(
+        f"\n[{kind}] Extraction diagnostics written to {output_folder}:\n"
+        f"  total_chunks      : {total_chunks}\n"
+        f"  retained_phrases  : {retained_total}\n"
+        f"  sentinel_empties  : {sentinel_chunks}\n"
+        f"  filter_drop_chunks: {filter_drop_chunks} ({filter_drops_total} phrases)\n"
+        f"  error_chunks      : {error_chunks}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Embeddings
 # ---------------------------------------------------------------------------
