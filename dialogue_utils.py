@@ -14,7 +14,9 @@ Public API (grouped by responsibility):
   Extraction:
     ExtractionResult (dataclass)
     extract_phrases
+    validate_extraction_cache
   Embeddings:
+    filter_missing_source_text
     get_embeddings_batch
   Cluster semantics:
     label_cluster, pretty_label
@@ -29,10 +31,11 @@ Public API (grouped by responsibility):
     _volume_table, _top_clusters
 
 Constants:
-  META_VOCABULARY      — meta-vocabulary stop-list for CIP-0004 diagnostics
-  PRIVACY_TERMS        — keywords for privacy-cluster detection
-  EXTRACTION_PROMPT    — LLM prompt template for concern extraction
-  BENEFIT_EXTRACTION_PROMPT — LLM prompt template for benefit extraction
+  META_VOCABULARY              — meta-vocabulary stop-list for CIP-0004 diagnostics
+  PRIVACY_TERMS                — keywords for privacy-cluster detection
+  CROSSCUTTING_ENTROPY_THRESHOLD — normalised entropy threshold for cross-cutting classification
+  EXTRACTION_PROMPT            — LLM prompt template for concern extraction
+  BENEFIT_EXTRACTION_PROMPT    — LLM prompt template for benefit extraction
 """
 
 from __future__ import annotations
@@ -52,6 +55,12 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+
+# Threshold for classifying a cluster as cross-cutting vs. technology-specific.
+# A cluster whose normalised technology entropy meets or exceeds this value is
+# considered cross-cutting (i.e. present across many technologies rather than
+# concentrated in one). 0.5 = at least half of maximum possible entropy.
+CROSSCUTTING_ENTROPY_THRESHOLD: float = 0.5
 
 META_VOCABULARY: List[str] = [
     "public dialogue",
@@ -248,6 +257,7 @@ def extract_chunks_from_pdf(
         doc.close()
 
         paragraphs = re.split(r"\n\s*\n", full_text)
+        n_skipped = 0
         for i, para in enumerate(paragraphs):
             para = re.sub(r"\s+", " ", para).strip()
             word_count = len(para.split())
@@ -255,15 +265,23 @@ def extract_chunks_from_pdf(
                 words = para.split()
                 if len(words) > max_chunk_words:
                     para = " ".join(words[:max_chunk_words])
-            chunks.append({
-                "text": para,
-                "source_file": Path(pdf_path).name,
-                "chunk_index": i,
-                "word_count": len(para.split()),
-                "technology": metadata.get("technology", "Unknown"),
-                "technology_meta": metadata.get("technology", "Unknown"),
-                "year": metadata.get("year", None),
-            })
+                chunks.append({
+                    "text": para,
+                    "source_file": Path(pdf_path).name,
+                    "chunk_index": i,
+                    "word_count": len(para.split()),
+                    "technology": metadata.get("technology", "Unknown"),
+                    "technology_meta": metadata.get("technology", "Unknown"),
+                    "year": metadata.get("year", None),
+                })
+            else:
+                n_skipped += 1
+        if n_skipped:
+            print(
+                f"  {Path(pdf_path).name}: {len(chunks)} chunks kept, "
+                f"{n_skipped} short paragraphs filtered out "
+                f"(min_words={min_chunk_words})"
+            )
     except Exception as e:
         print(f"Error processing {Path(pdf_path).name}: {e}")
     return chunks
@@ -383,8 +401,11 @@ def extract_phrases(
         retained: List[str] = []
         dropped: List[tuple] = []
         for phrase in raw_phrases:
+            phrase_lower = phrase.lower()
             match = next(
-                (tw for tw in tech_words if tw in phrase.lower()), None
+                (tw for tw in tech_words
+                 if re.search(r"\b" + re.escape(tw) + r"\b", phrase_lower)),
+                None,
             )
             if match:
                 dropped.append((phrase, match))
@@ -404,6 +425,43 @@ def extract_phrases(
             chunk_id=chunk_id,
             error=f"{type(exc).__name__}: {exc}",
         )
+
+
+def validate_extraction_cache(cache: Dict[str, Any], kind: str, warn_threshold: float = 0.30) -> bool:
+    """Check a loaded extraction cache for signs of a partial-failure run.
+
+    Parameters
+    ----------
+    cache:
+        Mapping of ``chunk_id → list[phrase]`` as loaded from JSON.
+    kind:
+        ``'concern'`` or ``'benefit'``, used only in warning messages.
+    warn_threshold:
+        If the fraction of empty entries exceeds this value, print a warning
+        and return ``False``.  Default 0.30 (30%).
+
+    Returns
+    -------
+    bool
+        ``True`` if the cache looks complete, ``False`` if suspiciously many
+        entries are empty (possibly masked API errors).
+    """
+    if not cache:
+        return False
+    n_empty = sum(1 for v in cache.values() if not v)
+    frac_empty = n_empty / len(cache)
+    if frac_empty > warn_threshold:
+        print(
+            f"[WARN] {kind} cache: {n_empty}/{len(cache)} entries "
+            f"({frac_empty:.0%}) are empty lists."
+        )
+        print(
+            "[WARN] This may indicate a partial-failure run where API errors "
+            "were cached as empty. Consider deleting the cache file and "
+            "re-running extraction."
+        )
+        return False
+    return True
 
 
 def write_extraction_diagnostics(
@@ -496,6 +554,36 @@ def write_extraction_diagnostics(
 # Embeddings
 # ---------------------------------------------------------------------------
 
+def filter_missing_source_text(df: pd.DataFrame, text_col: str = "text") -> pd.DataFrame:
+    """Drop rows where the source text column is NaN or empty.
+
+    Rows with missing source text are a data quality artefact (often short
+    fragments that slipped through the chunk filter).  They must be removed
+    before embedding or clustering to prevent a spurious "Missing source text"
+    cluster from appearing in the output.
+
+    Parameters
+    ----------
+    df:
+        Phrases DataFrame (concerns_df or benefits_df).
+    text_col:
+        Name of the column holding the source paragraph text.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered copy of *df* with missing-text rows removed.
+    """
+    mask_missing = df[text_col].isna() | (df[text_col].astype(str).str.strip() == "")
+    n_missing = int(mask_missing.sum())
+    if n_missing:
+        print(
+            f"[WARN] Dropping {n_missing} rows with missing '{text_col}' "
+            "before embedding (data quality artefact)."
+        )
+    return df[~mask_missing].copy()
+
+
 def get_embeddings_batch(texts: List[str], client, model: str = "text-embedding-3-small") -> np.ndarray:
     """Return a (len(texts), dim) array of embeddings from the OpenAI API.
 
@@ -547,7 +635,7 @@ def label_cluster(
 
     phrase_key = kind  # exemplars dict key
     exemplar_texts = "\n".join(
-        f"- {ex[phrase_key]} (from {ex.get('technology', 'Unknown')})"
+        f"- {ex[phrase_key]}"
         for ex in exemplars[:8]
     )
     cluster_type = (

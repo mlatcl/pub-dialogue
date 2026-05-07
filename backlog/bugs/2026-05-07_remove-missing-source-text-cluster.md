@@ -1,7 +1,7 @@
 ---
 id: "2026-05-07_remove-missing-source-text-cluster"
 title: "Remove or guard against 'Missing source text' cluster artefact"
-status: "Ready"
+status: "Completed"
 priority: "Medium"
 created: "2026-05-07"
 last_updated: "2026-05-07"

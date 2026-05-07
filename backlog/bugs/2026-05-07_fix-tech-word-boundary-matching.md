@@ -1,7 +1,7 @@
 ---
 id: "2026-05-07_fix-tech-word-boundary-matching"
 title: "Fix tech-word filter to use word-boundary matching"
-status: "Ready"
+status: "Completed"
 priority: "High"
 created: "2026-05-07"
 last_updated: "2026-05-07"

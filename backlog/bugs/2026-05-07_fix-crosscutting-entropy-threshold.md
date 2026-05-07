@@ -1,7 +1,7 @@
 ---
 id: "2026-05-07_fix-crosscutting-entropy-threshold"
 title: "Fix cross-cutting entropy threshold inconsistency"
-status: "Ready"
+status: "Completed"
 priority: "Medium"
 created: "2026-05-07"
 last_updated: "2026-05-07"

@@ -835,3 +835,207 @@ class TestClustersToLenses:
     def test_unknown_cluster_ignored(self):
         result = du.clusters_to_lenses([99], {})
         assert result == []
+
+
+# ===========================================================================
+# CIP-0006: validate_extraction_cache
+# ===========================================================================
+
+class TestValidateExtractionCache:
+    def test_healthy_cache_returns_true(self):
+        cache = {"id1": ["phrase a"], "id2": ["phrase b", "phrase c"]}
+        assert du.validate_extraction_cache(cache, "concern") is True
+
+    def test_empty_cache_returns_false(self):
+        assert du.validate_extraction_cache({}, "concern") is False
+
+    def test_all_empty_entries_returns_false(self, capsys):
+        cache = {"id1": [], "id2": [], "id3": []}
+        result = du.validate_extraction_cache(cache, "concern")
+        assert result is False
+        captured = capsys.readouterr()
+        assert "WARN" in captured.out
+
+    def test_below_threshold_returns_true(self):
+        cache = {"id1": [], "id2": ["phrase"], "id3": ["phrase"], "id4": ["phrase"]}
+        assert du.validate_extraction_cache(cache, "concern") is True
+
+    def test_above_threshold_prints_warning(self, capsys):
+        cache = {f"id{i}": [] for i in range(4)}
+        cache["id5"] = ["phrase"]
+        du.validate_extraction_cache(cache, "benefit")
+        captured = capsys.readouterr()
+        assert "WARN" in captured.out
+        assert "benefit" in captured.out
+
+    def test_custom_threshold(self):
+        cache = {"id1": [], "id2": ["phrase"], "id3": ["phrase"]}
+        assert du.validate_extraction_cache(cache, "concern", warn_threshold=0.20) is False
+        assert du.validate_extraction_cache(cache, "concern", warn_threshold=0.50) is True
+
+
+# ===========================================================================
+# CIP-0006 / Bug: filter_missing_source_text
+# ===========================================================================
+
+class TestFilterMissingSourceText:
+    def test_no_missing_returns_unchanged(self):
+        df = pd.DataFrame({"text": ["hello world", "foo bar"], "val": [1, 2]})
+        result = du.filter_missing_source_text(df)
+        assert len(result) == 2
+
+    def test_nan_rows_dropped(self, capsys):
+        df = pd.DataFrame({"text": ["hello", None, "world"], "val": [1, 2, 3]})
+        result = du.filter_missing_source_text(df)
+        assert len(result) == 2
+        assert "WARN" in capsys.readouterr().out
+
+    def test_empty_string_rows_dropped(self, capsys):
+        df = pd.DataFrame({"text": ["hello", "   ", "world"], "val": [1, 2, 3]})
+        result = du.filter_missing_source_text(df)
+        assert len(result) == 2
+        assert "WARN" in capsys.readouterr().out
+
+    def test_custom_column_name(self):
+        df = pd.DataFrame({"chunk_text": ["hello", None], "val": [1, 2]})
+        result = du.filter_missing_source_text(df, text_col="chunk_text")
+        assert len(result) == 1
+
+    def test_returns_copy_not_view(self):
+        df = pd.DataFrame({"text": ["hello", "world"], "val": [1, 2]})
+        result = du.filter_missing_source_text(df)
+        result["val"] = 99
+        assert df["val"].tolist() == [1, 2]
+
+
+# ===========================================================================
+# CIP-0006: chunking filter (word-boundary)
+# ===========================================================================
+
+class TestChunkingFilter:
+    def test_short_paragraphs_excluded(self, tmp_path):
+        """Paragraphs below min_chunk_words must NOT appear in the output."""
+        fitz = pytest.importorskip("fitz", reason="PyMuPDF not installed")
+        pdf_path = tmp_path / "test.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((50, 72), "Short.\n\nThis is a much longer paragraph with enough words to pass the minimum word count filter for the extraction pipeline.")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        chunks = du.extract_chunks_from_pdf(str(pdf_path), {}, min_chunk_words=10)
+        texts = [c["text"] for c in chunks]
+        assert not any(t.strip() == "Short." for t in texts), "Short paragraph should be filtered"
+        assert any("longer paragraph" in t for t in texts), "Long paragraph should be kept"
+
+    def test_all_chunks_meet_min_words(self, tmp_path):
+        """Every chunk in the output must satisfy the word count filter."""
+        fitz = pytest.importorskip("fitz", reason="PyMuPDF not installed")
+        pdf_path = tmp_path / "test2.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        lines = "\n\n".join([
+            "x",
+            "This paragraph has more than ten words so it should pass the filter check.",
+            "y z",
+            "Another longer paragraph that definitely meets the minimum word count requirement here.",
+        ])
+        page.insert_text((50, 72), lines)
+        doc.save(str(pdf_path))
+        doc.close()
+
+        chunks = du.extract_chunks_from_pdf(str(pdf_path), {}, min_chunk_words=10)
+        for chunk in chunks:
+            assert chunk["word_count"] >= 10, f"Chunk below min_words: {chunk['text']!r}"
+
+
+# ===========================================================================
+# Bug: tech-word filter uses word-boundary matching (Issue 6b)
+# ===========================================================================
+
+class TestTechWordBoundaryMatching:
+    def _extract(self, phrase_text, tech_words):
+        client = MagicMock()
+        client.chat.completions.create.return_value = _make_response(phrase_text)
+        return du.extract_phrases(_make_row(), kind="concern", client=client, tech_words=tech_words)
+
+    def test_gm_does_not_match_stigma(self):
+        result = self._extract("stigma around the technology", tech_words=["gm"])
+        assert "stigma around the technology" in result.retained_phrases
+
+    def test_gm_does_not_match_algorithm(self):
+        result = self._extract("concerns about the algorithm", tech_words=["gm"])
+        assert "concerns about the algorithm" in result.retained_phrases
+
+    def test_gm_matches_gm_crops(self):
+        result = self._extract("concerns about gm crops", tech_words=["gm"])
+        assert "concerns about gm crops" not in result.retained_phrases
+        assert any("gm" in drop[1] for drop in result.dropped_by_filter)
+
+    def test_ai_matches_whole_word(self):
+        result = self._extract("fear of ai systems", tech_words=["ai"])
+        assert "fear of ai systems" not in result.retained_phrases
+
+    def test_ai_does_not_match_inside_word(self):
+        result = self._extract("maintaining public trust", tech_words=["ai"])
+        assert "maintaining public trust" in result.retained_phrases
+
+
+# ===========================================================================
+# CIP-0007: label_cluster does not leak technology metadata
+# ===========================================================================
+
+class TestLabelClusterNoTechLeak:
+    def _exemplars(self):
+        return [
+            {"concern": "job loss risk", "technology": "AI"},
+            {"concern": "workplace disruption", "technology": "Nuclear"},
+        ]
+
+    def test_prompt_does_not_contain_technology_name(self):
+        """The LLM prompt must not include '(from AI)' or '(from Nuclear)'."""
+        client = MagicMock()
+        client.chat.completions.create.return_value = _make_response(
+            '{"label": "Employment", "description": "Jobs.", "key_terms": ["jobs"]}'
+        )
+        du.label_cluster(1, self._exemplars(), True, kind="concern", client=client)
+        call_args = client.chat.completions.create.call_args
+        messages = call_args[1]["messages"] if "messages" in call_args[1] else call_args[0][0]
+        full_prompt = " ".join(
+            m["content"] for m in messages if isinstance(m.get("content"), str)
+        )
+        assert "(from AI)" not in full_prompt
+        assert "(from Nuclear)" not in full_prompt
+        assert "from AI" not in full_prompt
+
+    def test_phrase_text_still_included(self):
+        """The exemplar phrases themselves must still appear in the prompt."""
+        client = MagicMock()
+        client.chat.completions.create.return_value = _make_response(
+            '{"label": "Employment", "description": "Jobs.", "key_terms": ["jobs"]}'
+        )
+        du.label_cluster(1, self._exemplars(), True, kind="concern", client=client)
+        call_args = client.chat.completions.create.call_args
+        messages = call_args[1]["messages"] if "messages" in call_args[1] else call_args[0][0]
+        full_prompt = " ".join(
+            m["content"] for m in messages if isinstance(m.get("content"), str)
+        )
+        assert "job loss risk" in full_prompt
+        assert "workplace disruption" in full_prompt
+
+
+# ===========================================================================
+# CROSSCUTTING_ENTROPY_THRESHOLD constant
+# ===========================================================================
+
+class TestCrosscuttingThreshold:
+    def test_constant_exists(self):
+        assert hasattr(du, "CROSSCUTTING_ENTROPY_THRESHOLD")
+
+    def test_constant_is_float_in_range(self):
+        t = du.CROSSCUTTING_ENTROPY_THRESHOLD
+        assert isinstance(t, float)
+        assert 0.0 < t < 1.0
+
+    def test_constant_value_is_half(self):
+        assert du.CROSSCUTTING_ENTROPY_THRESHOLD == 0.5
