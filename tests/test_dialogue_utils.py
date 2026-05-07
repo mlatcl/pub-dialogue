@@ -394,6 +394,95 @@ class TestVocabularyFrequencyDiagnostic:
 
 
 # ===========================================================================
+# generate_validation_summary — CIP-0005
+# ===========================================================================
+
+class TestGenerateValidationSummary:
+    """Tests for the CIP-0005 validation summary generator."""
+
+    def _write_yield_csv(self, tmp_path, concern_row, benefit_row=None):
+        rows = [concern_row]
+        if benefit_row:
+            rows.append(benefit_row)
+        pd.DataFrame(rows).to_csv(tmp_path / "extraction_yield_summary.csv", index=False)
+
+    def _make_env(self, tmp_path):
+        """Populate a minimal output folder with the files Activity 4 checks."""
+        self._write_yield_csv(
+            tmp_path,
+            {"track": "concern", "total_chunks": 100, "retained_phrases": 80,
+             "sentinel_empties": 10, "filter_drops_chunks": 5,
+             "filter_drops_total": 8, "error_chunks": 5},
+            {"track": "benefit", "total_chunks": 100, "retained_phrases": 60,
+             "sentinel_empties": 20, "filter_drops_chunks": 3,
+             "filter_drops_total": 4, "error_chunks": 2},
+        )
+        pd.DataFrame([{"chunk_id": f"c{i}", "text": "text"} for i in range(100)]).to_csv(
+            tmp_path / "paragraph_chunks.csv", index=False
+        )
+        pd.DataFrame([{"chunk_id": "c0", "concern": "risk"}] * 80).to_csv(
+            tmp_path / "extracted_concerns.csv", index=False
+        )
+        pd.DataFrame([{"chunk_id": "c0", "benefit": "gain"}] * 60).to_csv(
+            tmp_path / "extracted_benefits.csv", index=False
+        )
+        pd.DataFrame([{"cluster_id": i, "label": f"l{i}"} for i in range(75)]).to_csv(
+            tmp_path / "cluster_summary.csv", index=False
+        )
+
+    def test_file_created(self, tmp_path):
+        self._make_env(tmp_path)
+        path = du.generate_validation_summary(tmp_path)
+        assert path.exists()
+        assert path.name == "validation_summary.txt"
+
+    def test_returns_path(self, tmp_path):
+        self._make_env(tmp_path)
+        result = du.generate_validation_summary(tmp_path)
+        assert isinstance(result, Path)
+
+    def test_contains_concern_counts(self, tmp_path):
+        self._make_env(tmp_path)
+        du.generate_validation_summary(tmp_path)
+        content = (tmp_path / "validation_summary.txt").read_text()
+        assert "80" in content   # retained phrases
+        assert "CONCERNS" in content
+
+    def test_contains_benefit_counts(self, tmp_path):
+        self._make_env(tmp_path)
+        du.generate_validation_summary(tmp_path)
+        content = (tmp_path / "validation_summary.txt").read_text()
+        assert "BENEFITS" in content
+        assert "60" in content   # retained benefit phrases
+
+    def test_cluster_count_ok(self, tmp_path):
+        self._make_env(tmp_path)
+        du.generate_validation_summary(tmp_path, n_concern_clusters=75)
+        content = (tmp_path / "validation_summary.txt").read_text()
+        assert "[OK]" in content
+
+    def test_cluster_count_mismatch(self, tmp_path):
+        self._make_env(tmp_path)
+        du.generate_validation_summary(tmp_path, n_concern_clusters=90)
+        content = (tmp_path / "validation_summary.txt").read_text()
+        assert "MISMATCH" in content
+
+    def test_missing_file_flagged(self, tmp_path):
+        self._make_env(tmp_path)
+        du.generate_validation_summary(tmp_path)
+        content = (tmp_path / "validation_summary.txt").read_text()
+        # cluster_exemplars.json was not created in _make_env
+        assert "[MISSING]" in content
+        assert "cluster_exemplars.json" in content
+
+    def test_no_crash_on_empty_folder(self, tmp_path):
+        path = du.generate_validation_summary(tmp_path)
+        assert path.exists()
+        content = path.read_text()
+        assert "FILE NOT FOUND" in content or "MISSING" in content
+
+
+# ===========================================================================
 # Checkpoint I/O
 # ===========================================================================
 

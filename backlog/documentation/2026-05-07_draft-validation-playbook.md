@@ -1,7 +1,7 @@
 ---
 id: "2026-05-07_draft-validation-playbook"
 title: "Draft validation_playbook.md for checking analysis results"
-status: "Ready"
+status: "Completed"
 priority: "Medium"
 created: "2026-05-07"
 last_updated: "2026-05-07"
@@ -66,3 +66,9 @@ This task can proceed in parallel with all CIP-0001/0002/0003 tasks — it does 
 
 ### 2026-05-07
 Task created. No code dependencies — can be started immediately in parallel with infrastructure tasks.
+
+### 2026-05-07 — Completed
+validation_playbook.md written at project root. Covers 4 activities with
+optional Python snippets. generate_validation_summary() added to dialogue_utils.py.
+Export cell updated to bundle playbook + generate validation_summary.txt.
+8 new tests (103 total, all passing). Pending: Jess test run.
