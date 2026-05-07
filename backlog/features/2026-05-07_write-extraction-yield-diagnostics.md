@@ -1,7 +1,7 @@
 ---
 id: "2026-05-07_write-extraction-yield-diagnostics"
 title: "Update extraction loops to collect ExtractionResult and write yield diagnostic files"
-status: "Ready"
+status: "Completed"
 priority: "High"
 created: "2026-05-07"
 last_updated: "2026-05-07"
@@ -58,3 +58,9 @@ The checkpoint logic (`save_checkpoint` / `load_checkpoint`) should save the lis
 
 ### 2026-05-07
 Task created. Depends on `2026-05-07_add-extraction-result-dataclass`.
+
+### 2026-05-07 — Completed
+write_extraction_diagnostics() added to dialogue_utils.py.
+Writes: extraction_yield_summary.csv, tech_filter_drops_{kind}.csv, extraction_errors_{kind}.csv.
+Notebook cells 14 and 53 updated to collect ExtractionResult lists and call the function.
+7 new tests added (85 total, all passing).

@@ -1,7 +1,7 @@
 ---
 id: "2026-05-07_add-extraction-result-dataclass"
 title: "Add ExtractionResult dataclass and refactor extraction functions"
-status: "Ready"
+status: "Completed"
 priority: "High"
 created: "2026-05-07"
 last_updated: "2026-05-07"
@@ -57,3 +57,7 @@ The unified `extract_phrases(row_tuple, kind, ...)` function uses `kind="concern
 
 ### 2026-05-07
 Task created. Depends on `2026-05-07_extract-dialogue-utils-module`.
+
+### 2026-05-07 — Completed
+ExtractionResult dataclass was already implemented in dialogue_utils.py (previous session).
+Confirmed: chunk_id, raw_phrases, retained_phrases, dropped_by_filter, sentinel_returned, error.
