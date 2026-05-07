@@ -8,6 +8,24 @@ Analysis of UK public dialogue documents on science and technology, identifying 
 
 Click the badge above to open the notebook directly in Google Colab. The first cell installs dependencies and fetches `dialogue_utils.py` automatically.
 
+### Loading the PDF corpus
+
+The notebook supports two modes for loading the 66 source PDFs:
+
+**Option A — Public Google Drive folder (recommended)**
+
+1. Upload the PDF corpus and metadata Excel to a Google Drive folder
+2. Share the folder: right-click → Share → **Anyone with the link → Viewer**
+3. Copy the folder ID from the URL (`drive.google.com/drive/folders/`**`<ID>`**)
+4. In cell "Load PDF corpus", set `CORPUS_FOLDER_ID = "<your folder ID>"`
+5. Do the same for `METADATA_FILE_ID` (the file ID of the metadata Excel)
+
+The notebook will then download everything automatically via `gdown` — no sign-in required.
+
+**Option B — Manual upload**
+
+Leave `CORPUS_FOLDER_ID = None`. The cell falls back to `files.upload()`, where you can select all PDFs at once.
+
 ## Repository structure
 
 | Path | Contents |
