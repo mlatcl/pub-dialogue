@@ -1,7 +1,7 @@
 ---
 id: "2026-05-07_fix-sensitivity-call-sites-and-outputs"
 title: "Update sensitivity call sites in notebook and verify output files"
-status: "Ready"
+status: "Completed"
 priority: "High"
 created: "2026-05-07"
 last_updated: "2026-05-07"
@@ -59,3 +59,7 @@ If a full re-run is expensive (API costs), the sensitivity section uses only emb
 
 ### 2026-05-07
 Task created. Depends on `2026-05-07_write-run-sensitivity-function`.
+
+### 2026-05-07 — Completed
+Cells 104 and 114 now call run_sensitivity() with kind='concern' and kind='benefit'
+respectively. Cell 114 bug fixed (was using concern embeddings for benefit sensitivity).

@@ -1,7 +1,7 @@
 ---
 id: "2026-05-07_write-run-sensitivity-function"
 title: "Write run_sensitivity function with kind parameter and separate output prefixes"
-status: "Ready"
+status: "Completed"
 priority: "High"
 created: "2026-05-07"
 last_updated: "2026-05-07"
@@ -56,3 +56,7 @@ This task writes the function into `dialogue_utils.py`. The next task (`2026-05-
 
 ### 2026-05-07
 Task created. Depends on `2026-05-07_extract-dialogue-utils-module` (run_sensitivity lives in dialogue_utils).
+
+### 2026-05-07 — Completed
+run_sensitivity() implemented in dialogue_utils.py with kind parameter and
+separate output prefixes (concern_sensitivity_* vs benefit_sensitivity_*).

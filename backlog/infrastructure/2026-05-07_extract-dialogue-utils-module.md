@@ -1,7 +1,7 @@
 ---
 id: "2026-05-07_extract-dialogue-utils-module"
 title: "Create dialogue_utils.py and pytest test suite"
-status: "In Progress"
+status: "Completed"
 priority: "High"
 created: "2026-05-07"
 last_updated: "2026-05-07"
@@ -70,3 +70,6 @@ Implementation complete:
 - `tests/test_dialogue_utils.py` written with 78 tests across 14 test classes
 - `tests/conftest.py` added to handle sklearn/scipy import issues in the test environment
 - All 78 tests pass: `pytest tests/test_dialogue_utils.py` → 78 passed, 0 failures
+
+### 2026-05-07 — Completed
+dialogue_utils.py created with 45 consolidated functions. 78 tests all passing.

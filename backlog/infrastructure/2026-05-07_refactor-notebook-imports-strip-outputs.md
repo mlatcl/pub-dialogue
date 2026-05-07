@@ -1,7 +1,7 @@
 ---
 id: "2026-05-07_refactor-notebook-imports-strip-outputs"
 title: "Refactor notebook to use dialogue_utils, strip outputs, align section numbering"
-status: "Ready"
+status: "Completed"
 priority: "High"
 created: "2026-05-07"
 last_updated: "2026-05-07"
@@ -64,3 +64,11 @@ import dialogue_utils as du
 
 ### 2026-05-07
 Task created. Depends on `2026-05-07_extract-dialogue-utils-module`.
+
+### 2026-05-07 — Completed
+- All 22 duplicate function definitions replaced with comments/imports
+- extract_phrases() replaces extract_concerns/benefits_from_paragraph in cells 14, 53
+- run_sensitivity() replaces run_for_k in cells 104, 114
+- CIP-0002 bug fixed: cell 114 now uses benefit_embeddings_normalized
+- All outputs stripped; nbstripout installed via .gitattributes
+- Notebook size: ~21 MB → 243 KB
