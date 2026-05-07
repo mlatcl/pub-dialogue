@@ -1,19 +1,41 @@
-# Project Name
+# Public Dialogue Analyser
 
-This project uses [VibeSafe](https://github.com/lawrennd/vibesafe) for project management.
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mlatcl/pub-dialogue/blob/main/public_dialogue_analyser_v12b_4.ipynb)
 
-## Project Structure
+Analysis of UK public dialogue documents on science and technology, identifying shared concerns and benefits across technologies and tracking how public dialogue about AI changes over time.
 
-- **tenets/**: Project tenets and guiding principles
-- **backlog/**: Task tracking system
-- **cip/**: Code Improvement Plans
-- **ai-requirements/**: AI-Assisted Requirements Framework
+## Quick start
 
-## Getting Started
+Click the badge above to open the notebook directly in Google Colab. The first cell installs dependencies and fetches `dialogue_utils.py` automatically.
 
-1. Define your project tenets in the `tenets/` directory
-2. Use the `backlog/` to track tasks and issues
-3. Document code improvements using CIPs in the `cip/` directory
-4. Use the AI-Requirements framework for structured requirements gathering
+## Repository structure
 
-For more information, visit: https://github.com/lawrennd/vibesafe
+| Path | Contents |
+|------|----------|
+| `public_dialogue_analyser_v12b_4.ipynb` | Main analysis notebook |
+| `dialogue_utils.py` | Shared utility functions (imported by the notebook) |
+| `tests/` | pytest test suite for `dialogue_utils.py` (103 tests) |
+| `validation_playbook.md` | Researcher guide for reviewing analysis outputs |
+| `cip/` | Code Improvement Plans |
+| `backlog/` | Task tracking |
+| `requirements/` | Project requirements |
+
+## Running locally
+
+```bash
+git clone https://github.com/mlatcl/pub-dialogue.git
+cd pub-dialogue
+pip install PyMuPDF openai scikit-learn umap-learn plotly kaleido openpyxl tqdm scipy
+jupyter notebook public_dialogue_analyser_v12b_4.ipynb
+```
+
+## Running tests
+
+```bash
+pip install pytest
+pytest tests/
+```
+
+## Project management
+
+This project uses [VibeSafe](https://github.com/lawrennd/vibesafe) for structured project management (CIPs, backlog, requirements).
