@@ -1,7 +1,7 @@
 ---
 id: "2026-05-12_cip000d-update-utils-py"
 title: "Update pub_dialogue/utils.py with re-exports for access/assess/address"
-status: "Proposed"
+status: "Completed"
 priority: "High"
 created: "2026-05-12"
 last_updated: "2026-05-12"

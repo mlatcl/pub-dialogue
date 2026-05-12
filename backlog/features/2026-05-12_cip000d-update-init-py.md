@@ -1,7 +1,7 @@
 ---
 id: "2026-05-12_cip000d-update-init-py"
 title: "Update pub_dialogue/__init__.py to expose access/assess/address submodules"
-status: "Proposed"
+status: "Completed"
 priority: "Medium"
 created: "2026-05-12"
 last_updated: "2026-05-12"

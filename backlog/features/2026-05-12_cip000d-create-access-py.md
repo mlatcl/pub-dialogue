@@ -1,7 +1,7 @@
 ---
 id: "2026-05-12_cip000d-create-access-py"
 title: "Create pub_dialogue/access.py — data access module"
-status: "Proposed"
+status: "Completed"
 priority: "High"
 created: "2026-05-12"
 last_updated: "2026-05-12"
