@@ -1,4 +1,12 @@
 
+# Project data directories (large files, not committed)
+pdfs/
+outputs/
+checkpoints/
+__pycache__/
+*.pyc
+.pymupdf_target/
+
 # VibeSafe System Files (Auto-added during installation)
 # These are VibeSafe infrastructure - not your project content
 
