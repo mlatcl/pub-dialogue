@@ -85,47 +85,104 @@ litellm reads provider keys from environment variables automatically:
 - `GOOGLE_API_KEY` → Gemini
 No extra wiring needed beyond what `.env` already provides (CIP-000B).
 
+### `LLMClient` wrapper (`pub_dialogue/client.py`)
+
+Rather than calling `litellm` directly inside utility functions (which just
+swaps one tight coupling for another), a thin `LLMClient` class is introduced
+as the single integration point.  Functions continue to receive a `client`
+argument — dependency injection is preserved, and litellm is an implementation
+detail hidden behind the wrapper.
+
+```python
+# pub_dialogue/client.py
+
+class LLMClient:
+    """Thin wrapper around litellm providing a stable, mockable interface.
+
+    All LLM calls in pub_dialogue.utils go through this class.  litellm is
+    imported lazily inside each method so the package loads without it if
+    no API calls are needed (e.g. pure-analysis notebooks).
+    """
+
+    def __init__(
+        self,
+        model: str = "gpt-4o-mini",
+        embedding_model: str = "text-embedding-3-large",
+    ):
+        self.model = model
+        self.embedding_model = embedding_model
+
+    def complete(self, messages: list[dict], **kwargs) -> str:
+        """Return the text of the first completion choice."""
+        import litellm
+        resp = litellm.completion(model=self.model, messages=messages, **kwargs)
+        return resp.choices[0].message.content
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """Return a list of embedding vectors, one per input text."""
+        import litellm
+        resp = litellm.embedding(model=self.embedding_model, input=texts)
+        return [d.embedding for d in resp.data]
+```
+
+**Why a wrapper rather than calling litellm directly?**
+
+- **Testability**: `mock_client = MagicMock(spec=LLMClient)` — no
+  module-level patching of `litellm.*` in every test.
+- **Single integration point**: if litellm's API ever changes, only
+  `client.py` needs updating.
+- **Lazy import**: `import litellm` inside each method means analysis
+  notebooks that never call the API don't pay the import cost and don't
+  need litellm installed.
+- **Type-safe signatures**: functions annotated `client: LLMClient` instead
+  of `client: Any`.
+- **Swappable**: a `MockLLMClient` with identical interface can be used
+  in tests or dry-run modes without patching anything.
+
 ### Changes to `pub_dialogue/utils.py`
 
-1. Replace `from openai import OpenAI` with `import litellm`.
-2. `extract_phrases(chunk_text, kind, client, model)` — `client` parameter
-   becomes optional/deprecated; calls become `litellm.completion(model=model, ...)`.
-3. `label_cluster(phrases, client, model)` — same pattern.
-4. `embed_texts(texts, client, model)` — becomes
-   `litellm.embedding(model=model, input=texts).data`.
-5. A thin `get_client()` shim is kept for backward compatibility (returns a
-   `litellm`-backed object that satisfies the existing call sites).
+1. Remove `from openai import OpenAI`.
+2. Import `LLMClient` from `pub_dialogue.client`.
+3. `extract_phrases(chunk_text, kind, client: LLMClient)` — replace
+   `client.chat.completions.create(...)` with `client.complete(messages)`.
+4. `label_cluster(phrases, client: LLMClient)` — same.
+5. `embed_texts(texts, client: LLMClient)` — replace
+   `client.embeddings.create(...)` with `client.embed(texts)`.
+6. The `model` parameter is removed from each function signature (it now
+   lives on the `LLMClient` instance).
 
 ### Changes to notebooks
 
 **`01_processing.ipynb` config cell** (cell 3):
 ```python
-LLM_PROVIDER    = "openai"               # openai | anthropic | google
-LLM_MODEL       = "gpt-4o-mini"          # any litellm model string
+LLM_MODEL       = "gpt-4o-mini"             # any litellm model string
 EMBEDDING_MODEL = "text-embedding-3-large"  # change only with full re-run
 ```
 
-**API access cell** (cell 6) — simplified:
+**API access cell** (cell 6) — simplified, constructs an `LLMClient`:
 ```python
-import os, litellm
+import os
 from dotenv import load_dotenv
+from pub_dialogue.client import LLMClient
+
 load_dotenv()
-# litellm picks up provider keys from env automatically.
-# Verify at least one key is present:
-provider_keys = {
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "google": "GOOGLE_API_KEY",
-}
-key_var = provider_keys.get(LLM_PROVIDER, "OPENAI_API_KEY")
-if not os.environ.get(key_var):
+
+# Infer which env-var key to prompt for from the model name prefix
+_key_map = {"claude": "ANTHROPIC_API_KEY", "gemini": "GOOGLE_API_KEY"}
+_key_var = next(
+    (v for k, v in _key_map.items() if LLM_MODEL.startswith(k)),
+    "OPENAI_API_KEY",
+)
+if not os.environ.get(_key_var):
     from getpass import getpass
-    os.environ[key_var] = getpass(f"Enter {key_var}: ")
-print(f"Provider: {LLM_PROVIDER}, model: {LLM_MODEL}")
+    os.environ[_key_var] = getpass(f"Enter {_key_var}: ")
+
+client = LLMClient(model=LLM_MODEL, embedding_model=EMBEDDING_MODEL)
+print(f"LLMClient ready — model: {LLM_MODEL}, embeddings: {EMBEDDING_MODEL}")
 ```
 
-The `client = OpenAI(...)` line and subsequent `client.models.list()` check
-are removed; litellm is stateless.
+`LLM_PROVIDER` is dropped; the provider is inferred from the model name
+(litellm convention), so `"claude-..."` routes to Anthropic automatically.
 
 ### `pyproject.toml` changes
 
@@ -143,32 +200,39 @@ user has it installed.  This keeps the package lean.
 
 ### Backward compatibility
 
-- `pub_dialogue.utils` functions keep the same signatures; `client` arg
-  is accepted but ignored (deprecated warning added).
+- `pub_dialogue.utils` function signatures are unchanged (`client` is still
+  the first positional argument); callers pass an `LLMClient` instead of an
+  `openai.OpenAI`.  The `model` kwarg is removed from function signatures
+  (it now lives on the client); existing call sites that passed `model=`
+  explicitly will raise `TypeError` and need updating.
 - Notebooks that pin `LLM_MODEL = "gpt-4o-mini"` and have `OPENAI_API_KEY`
-  set continue to work without any changes.
-- Tests that mock `openai.OpenAI` are updated to mock `litellm.completion`
-  and `litellm.embedding` instead.
+  set continue to work by constructing `LLMClient(model=LLM_MODEL)`.
+- Tests are updated to `MagicMock(spec=LLMClient)` — no litellm patching.
 
 ## Implementation Plan
 
 1. **Add litellm to `pyproject.toml`** as a core dependency.
 
-2. **Update `pub_dialogue/utils.py`**:
-   - Swap `openai.OpenAI` client calls for `litellm.completion` /
-     `litellm.embedding`.
-   - Keep function signatures; mark `client` arg as deprecated.
+2. **Create `pub_dialogue/client.py`** with the `LLMClient` wrapper class.
+   Export it from `pub_dialogue/__init__.py`.
 
-3. **Update `tests/test_dialogue_utils.py`**:
-   - Replace `openai` mocks with `litellm` mocks.
-   - Add provider-switching integration test (mocked).
+3. **Update `pub_dialogue/utils.py`**:
+   - Remove `from openai import OpenAI`.
+   - Annotate `client: LLMClient` parameters.
+   - Replace `client.chat.completions.create(...)` → `client.complete(messages)`.
+   - Replace `client.embeddings.create(...)` → `client.embed(texts)`.
+   - Remove `model` parameter from function signatures.
 
-4. **Update `01_processing.ipynb`**:
-   - Add `LLM_PROVIDER` / `EMBEDDING_MODEL` config variables.
-   - Simplify API access cell (remove `OpenAI` client init).
+4. **Update `tests/test_dialogue_utils.py`**:
+   - Replace `MagicMock` `openai.OpenAI` constructions with
+     `MagicMock(spec=LLMClient)`.
+   - Add a `TestLLMClient` class with mocked litellm; verify `complete` and
+     `embed` return correctly shaped outputs.
+   - Add parametrised provider smoke test.
 
-5. **Update remaining notebooks** (`01a_clustering.ipynb` and any that call
-   LLM functions directly) for the same provider config pattern.
+5. **Update `01_processing.ipynb`** and **`01a_clustering.ipynb`**:
+   - Drop `LLM_PROVIDER`; keep `LLM_MODEL` and `EMBEDDING_MODEL`.
+   - Replace API access cell with `LLMClient(...)` construction.
 
 6. **Update `.env.example`** with provider key comments (done in Level 1).
 
@@ -186,10 +250,16 @@ preserved but ignored — a `DeprecationWarning` will be emitted.
 
 ## Testing Strategy
 
-- Unit tests: mock `litellm.completion` and `litellm.embedding`; verify
-  extraction, labelling, and embedding functions produce correct output.
-- Smoke test: parametrised test over provider strings `["openai",
-  "anthropic", "google"]` using mocked responses.
+- **Unit tests for `LLMClient`**: mock `litellm.completion` and
+  `litellm.embedding` at the litellm module level; verify `complete` returns
+  a string and `embed` returns a list of float lists.
+- **Unit tests for utils functions**: use `MagicMock(spec=LLMClient)` —
+  no litellm patching needed.  Verify functions call `client.complete` /
+  `client.embed` with correct arguments.
+- **Parametrised provider smoke test**: construct `LLMClient` with model
+  strings `"gpt-4o-mini"`, `"claude-3-5-haiku-latest"`,
+  `"gemini/gemini-2.0-flash"`; verify no import errors and correct routing
+  (mocked litellm).
 - Full suite must stay at 171+ tests passing.
 
 ## Related Requirements
@@ -200,8 +270,10 @@ reproducibility.
 ## Implementation Status
 
 - [ ] Add litellm to `pyproject.toml`
-- [ ] Update `pub_dialogue/utils.py` to use litellm
-- [ ] Update test mocks
+- [ ] Create `pub_dialogue/client.py` with `LLMClient`
+- [ ] Export `LLMClient` from `pub_dialogue/__init__.py`
+- [ ] Update `pub_dialogue/utils.py` — swap openai calls, annotate client type
+- [ ] Update `tests/test_dialogue_utils.py` — spec mocks + `TestLLMClient`
 - [ ] Update `01_processing.ipynb` config + API access cells
 - [ ] Update `01a_clustering.ipynb` if needed
 - [ ] Update `README.md`
@@ -213,3 +285,4 @@ reproducibility.
 - [litellm documentation](https://docs.litellm.ai/)
 - [litellm supported providers](https://docs.litellm.ai/docs/providers)
 - [CIP-000B: pub_dialogue package](cip000B.md)
+- [Dependency injection pattern](https://en.wikipedia.org/wiki/Dependency_injection)
