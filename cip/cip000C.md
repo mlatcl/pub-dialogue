@@ -20,8 +20,8 @@ title: "Multi-LLM provider support via litellm"
 
 - [x] Proposed - Initial idea documented
 - [x] Accepted - Approved, ready to start work
-- [ ] In Progress - Actively being implemented
-- [ ] Implemented - Work complete, awaiting verification
+- [x] In Progress - Actively being implemented
+- [x] Implemented - Work complete, awaiting verification
 - [ ] Closed - Verified and complete
 
 ## Summary
@@ -269,16 +269,16 @@ reproducibility.
 
 ## Implementation Status
 
-- [ ] Add litellm to `pyproject.toml`
-- [ ] Create `pub_dialogue/client.py` with `LLMClient`
-- [ ] Export `LLMClient` from `pub_dialogue/__init__.py`
-- [ ] Update `pub_dialogue/utils.py` — swap openai calls, annotate client type
-- [ ] Update `tests/test_dialogue_utils.py` — spec mocks + `TestLLMClient`
-- [ ] Update `01_processing.ipynb` config + API access cells
-- [ ] Update `01a_clustering.ipynb` if needed
-- [ ] Update `README.md`
-- [ ] Full test suite green
-- [ ] Commit
+- [x] Add litellm to `pyproject.toml`
+- [x] Create `pub_dialogue/client.py` with `LLMClient`
+- [x] Export `LLMClient` from `pub_dialogue/__init__.py`
+- [x] Update `pub_dialogue/utils.py` — swap openai calls, annotate client type
+- [x] Update `tests/test_dialogue_utils.py` — spec mocks + `TestLLMClient`
+- [x] Update `01_processing.ipynb` config + API access cells
+- [x] Update `01a_clustering.ipynb`
+- [x] Update `README.md`
+- [x] Full test suite green (179 passing)
+- [x] Commit
 
 ## References
 
