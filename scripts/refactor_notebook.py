@@ -2,7 +2,7 @@
 import json, re, sys
 from pathlib import Path
 
-NB_PATH = Path("public_dialogue_analyser_v12b_4.ipynb")
+NB_PATH = Path("public_dialogue_analyser_v19.ipynb")
 OUT_PATH = NB_PATH  # overwrite in place
 
 with open(NB_PATH) as f:

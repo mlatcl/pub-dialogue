@@ -1,6 +1,6 @@
 # Public Dialogue Analyser
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mlatcl/pub-dialogue/blob/main/public_dialogue_analyser_v12b_4.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mlatcl/pub-dialogue/blob/main/public_dialogue_analyser_v19.ipynb)
 
 ## What this project does
 
@@ -55,9 +55,10 @@ You will need to provide an **OpenAI API key** (stored as a Colab secret named
 
 | Path | Contents |
 |------|----------|
-| `public_dialogue_analyser_v12b_4.ipynb` | Main analysis notebook |
+| `public_dialogue_analyser_v19.ipynb` | Main analysis notebook (v19) |
+| `prompt_sensitivity_v16.ipynb` | Prompt sensitivity analysis notebook |
 | `dialogue_utils.py` | Shared utility functions (imported by the notebook) |
-| `tests/` | pytest suite for `dialogue_utils.py` (103 tests) |
+| `tests/` | pytest suite for `dialogue_utils.py` (153 tests) |
 | `validation_playbook.md` | Researcher guide for reviewing and validating outputs |
 | `cip/` | Code Improvement Plans — design decisions and implementation tracking |
 | `backlog/` | Task tracking — bugs and features |
@@ -69,7 +70,8 @@ You will need to provide an **OpenAI API key** (stored as a Colab secret named
 git clone https://github.com/mlatcl/pub-dialogue.git
 cd pub-dialogue
 pip install PyMuPDF openai scikit-learn umap-learn plotly kaleido openpyxl tqdm scipy
-jupyter notebook public_dialogue_analyser_v12b_4.ipynb
+export OPENAI_API_KEY=your-key-here
+jupyter notebook public_dialogue_analyser_v19.ipynb
 ```
 
 ## Running tests
@@ -81,23 +83,27 @@ pytest tests/
 
 ## Analysis outputs
 
-Running the full notebook produces a ZIP export containing:
+Running the full notebook produces outputs in the `outputs/` directory, including:
 
 | File | Description |
 |------|-------------|
-| `concern_phrases.csv` | All extracted concern phrases with source chunk and document |
-| `benefit_phrases.csv` | All extracted benefit phrases |
-| `concern_clusters_k*.csv` | Cluster assignments at each k |
-| `benefit_clusters_k*.csv` | Cluster assignments at each k |
-| `concern_labels_k*.json` | LLM-generated cluster labels |
-| `benefit_labels_k*.json` | LLM-generated cluster labels |
-| `extraction_yield_summary.csv` | Per-document extraction yield statistics |
-| `tech_filter_drops_*.csv` | Phrases dropped by the technology-word filter |
-| `extraction_errors_*.csv` | Chunks where the LLM returned an error |
-| `concern_vocab_frequency.csv` | Top unigram/bigram vocabulary in concern phrases |
-| `benefit_vocab_frequency.csv` | Top unigram/bigram vocabulary in benefit phrases |
+| `paragraph_chunks.csv` | All extracted text chunks with `chunking_method` and `was_truncated` columns |
+| `paragraph_chunks_per_document.csv` | Per-document chunk counts and chunking method used |
+| `extracted_concerns.csv` | All extracted concern phrases with source chunk and document |
+| `extracted_benefits.csv` | All extracted benefit phrases |
+| `cluster_summary.csv` | Concern cluster sizes, entropy, and cross-cutting classification |
+| `benefit_cluster_summary.csv` | Benefit cluster summary |
+| `cluster_labels.json` | LLM-generated concern cluster labels |
+| `benefit_cluster_labels.json` | LLM-generated benefit cluster labels |
+| `ai_distinctive_concerns.csv` | Concern clusters most over- or under-represented in AI dialogues |
+| `ai_distinctive_framings.csv` | Framing lens distinctiveness for AI vs non-AI dialogues |
+| `ai_distinctive_benefits.csv` | Benefit clusters most distinctive to AI dialogues |
+| `extraction_yield_summary.csv` | Per-run extraction yield statistics (concern + benefit) |
+| `tech_filter_drops_concern.csv` | Concern phrases dropped by the technology-word filter |
+| `tech_filter_drops_benefit.csv` | Benefit phrases dropped by the technology-word filter |
 | `validation_summary.txt` | Key counts and file checklist for result validation |
-| `validation_playbook.md` | Researcher guide (copy of repository file) |
+| `sensitivity_*_k{60,75,90}.*` | Concern k-sensitivity outputs |
+| `benefit_sensitivity_*_k{60,75,90}.*` | Benefit k-sensitivity outputs |
 
 ## Project management
 
@@ -109,6 +115,6 @@ structured project management. The development workflow is:
 - **CIPs** (`cip/`) — how we are going to do it (design plans)
 - **Backlog** (`backlog/`) — concrete tasks in progress or queued
 
-Current open CIPs address: chunk extraction filter correctness, technology
-metadata leak in cluster labelling, prompt sensitivity analysis, and temporal
-analysis normalisation. See `cip/README.md` for the full list.
+Current open CIPs address: prompt sensitivity analysis methodology (CIP-0008)
+and temporal analysis normalisation (CIP-0009) — both pending research
+discussion. See `cip/README.md` for the full list.

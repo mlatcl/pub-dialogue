@@ -11,6 +11,7 @@ Public API (grouped by responsibility):
     save_checkpoint, load_checkpoint
   Corpus ingestion:
     extract_chunks_from_pdf
+    reset_chunk_stats, get_chunk_stats
   Extraction:
     ExtractionResult (dataclass)
     extract_phrases
@@ -134,6 +135,13 @@ Paragraph:
 
 _SENTINELS = {"NO_CONCERN", "NO_BENEFIT"}
 
+# Chunking defaults — match v19 notebook configuration
+MIN_CHUNK_WORDS: int = 40
+MIN_CHUNK_CHARS: int = 80
+MAX_CHUNK_WORDS: int = 500
+SENTENCE_FALLBACK_TARGET_WORDS: int = 300
+SENTENCE_FALLBACK_MIN_PARAGRAPHS: int = 3
+
 # Default tech-word filter (can be overridden at call site)
 DEFAULT_TECH_WORDS: List[str] = [
     "ai", "artificial intelligence", "nuclear", "genetic", "nano",
@@ -219,31 +227,133 @@ def load_checkpoint(checkpoint_path: Path) -> Optional[Any]:
 
 
 # ---------------------------------------------------------------------------
-# Corpus ingestion
+# Corpus ingestion — v19 three-case hybrid chunker
 # ---------------------------------------------------------------------------
+
+# Module-level accumulator; reset between pipeline runs with reset_chunk_stats().
+_chunk_stats: Dict[str, int] = {
+    "paragraphs_seen": 0,
+    "paragraphs_kept": 0,
+    "paragraphs_truncated": 0,
+    "paragraphs_below_word_floor": 0,
+    "paragraphs_below_char_floor": 0,
+    "paragraphs_empty": 0,
+    "documents_paragraph_only": 0,
+    "documents_paragraph_with_split": 0,
+    "documents_sentence_fallback": 0,
+    "oversized_paragraphs_split": 0,
+    "chunks_from_sentence_split": 0,
+    "chunks_from_sentence_fallback": 0,
+}
+
+
+def reset_chunk_stats() -> None:
+    """Reset the module-level chunk statistics accumulator to zero."""
+    for key in _chunk_stats:
+        _chunk_stats[key] = 0
+
+
+def get_chunk_stats() -> Dict[str, int]:
+    """Return a copy of the current chunk statistics accumulator."""
+    return dict(_chunk_stats)
+
+
+def _split_into_sentences(text: str) -> List[str]:
+    """Split *text* into sentences. Collapses whitespace first."""
+    text = re.sub(r"\s+", " ", text).strip()
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z\d])", text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _repack_sentences_into_chunks(sentences: List[str], target_words: int) -> List[str]:
+    """Greedily repack *sentences* into chunks of approximately *target_words* words."""
+    chunks: List[str] = []
+    current: List[str] = []
+    current_words = 0
+    for sent in sentences:
+        sent_words = len(sent.split())
+        if sent_words >= target_words:
+            if current:
+                chunks.append(" ".join(current))
+                current = []
+                current_words = 0
+            chunks.append(sent)
+            continue
+        if current_words + sent_words > target_words and current:
+            chunks.append(" ".join(current))
+            current = [sent]
+            current_words = sent_words
+        else:
+            current.append(sent)
+            current_words += sent_words
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
+def _paragraph_split(full_text: str) -> List[str]:
+    """Split *full_text* on double-newlines; return non-empty cleaned paragraphs."""
+    paragraphs = re.split(r"\n\s*\n", full_text)
+    out = []
+    for para in paragraphs:
+        para = re.sub(r"\s+", " ", para).strip()
+        if para:
+            out.append(para)
+    return out
+
 
 def extract_chunks_from_pdf(
     pdf_path: Path,
     metadata: Dict[str, Any],
-    min_chunk_words: int = 50,
-    min_chunk_chars: int = 100,
-    max_chunk_words: int = 400,
+    min_chunk_words: int = MIN_CHUNK_WORDS,
+    min_chunk_chars: int = MIN_CHUNK_CHARS,
+    max_chunk_words: int = MAX_CHUNK_WORDS,
+    sentence_fallback_target_words: int = SENTENCE_FALLBACK_TARGET_WORDS,
+    sentence_fallback_min_paragraphs: int = SENTENCE_FALLBACK_MIN_PARAGRAPHS,
 ) -> List[Dict[str, Any]]:
-    """Extract paragraph-level text chunks from a single PDF.
+    """Extract text chunks from a single PDF using the v19 three-case hybrid strategy.
+
+    Case 1 — Paragraph-only segmentation:
+        Double-newline splitting produces ≥ *sentence_fallback_min_paragraphs*
+        substantive paragraphs and no paragraph exceeds *max_chunk_words*.
+        All chunks are the author's paragraphs, unchanged.
+
+    Case 2 — Paragraph segmentation with internal sentence-splitting:
+        Double-newline splitting produces enough substantive paragraphs but at
+        least one paragraph exceeds *max_chunk_words*.  Well-sized paragraphs
+        are kept as-is; only the oversized ones are sentence-split into windows
+        of ≈ *sentence_fallback_target_words* words.
+
+    Case 3 — Full sentence-level fallback:
+        Double-newline splitting produces fewer than
+        *sentence_fallback_min_paragraphs* substantive paragraphs (the PDF
+        lacks paragraph-break encoding).  The entire document is
+        sentence-split and repacked.
+
+    Each returned chunk dict includes a ``chunking_method`` key:
+    ``"paragraph"``, ``"sentence_split"``, or ``"sentence_fallback"``.
+
+    Accumulates statistics into the module-level ``_chunk_stats`` dict.
+    Call :func:`reset_chunk_stats` before each pipeline run and
+    :func:`get_chunk_stats` to retrieve the totals.
 
     Parameters
     ----------
     pdf_path:
         Path to the PDF file.
     metadata:
-        Dict with at least 'technology' and 'year' keys.
+        Dict with at least ``'technology'`` and ``'year'`` keys.
     min_chunk_words, min_chunk_chars, max_chunk_words:
-        Length filters; paragraphs shorter than the minimums are kept in the
-        output dataframe but will rarely yield extraction results.
+        Length filters applied after chunking.
+    sentence_fallback_target_words:
+        Target window size (words) when sentence-repacking.
+    sentence_fallback_min_paragraphs:
+        Minimum substantive paragraphs required for paragraph-mode; fewer
+        triggers case-3 sentence fallback.
 
     Returns
     -------
-    list of dicts, one per paragraph.
+    list of dicts, one per accepted chunk.
     """
     try:
         import fitz  # type: ignore  # PyMuPDF
@@ -251,39 +361,92 @@ def extract_chunks_from_pdf(
         raise ImportError("PyMuPDF (fitz) is required for PDF extraction.") from exc
 
     chunks: List[Dict[str, Any]] = []
+
     try:
         doc = fitz.open(pdf_path)
         full_text = "".join(page.get_text() for page in doc)
         doc.close()
 
-        paragraphs = re.split(r"\n\s*\n", full_text)
-        n_skipped = 0
-        for i, para in enumerate(paragraphs):
-            para = re.sub(r"\s+", " ", para).strip()
-            word_count = len(para.split())
-            if word_count >= min_chunk_words and len(para) >= min_chunk_chars:
-                words = para.split()
-                if len(words) > max_chunk_words:
-                    para = " ".join(words[:max_chunk_words])
-                chunks.append({
-                    "text": para,
-                    "source_file": Path(pdf_path).name,
-                    "chunk_index": i,
-                    "word_count": len(para.split()),
-                    "technology": metadata.get("technology", "Unknown"),
-                    "technology_meta": metadata.get("technology", "Unknown"),
-                    "year": metadata.get("year", None),
-                })
+        paragraphs = _paragraph_split(full_text)
+        substantive = [
+            p for p in paragraphs
+            if len(p.split()) >= min_chunk_words and len(p) >= min_chunk_chars
+        ]
+        too_few_paragraphs = len(substantive) < sentence_fallback_min_paragraphs
+
+        if too_few_paragraphs:
+            # Case 3: full sentence-level fallback
+            _chunk_stats["documents_sentence_fallback"] += 1
+            sentences = _split_into_sentences(full_text)
+            packed = _repack_sentences_into_chunks(sentences, sentence_fallback_target_words)
+            chunk_inputs: List[tuple] = [(c, "sentence_fallback") for c in packed]
+            _chunk_stats["chunks_from_sentence_fallback"] += len(chunk_inputs)
+        else:
+            # Cases 1 and 2: paragraph-mode, with sentence-splitting only for
+            # individual oversized paragraphs.
+            chunk_inputs = []
+            any_split = False
+            for para in paragraphs:
+                para = re.sub(r"\s+", " ", para).strip()
+                if not para:
+                    continue
+                if len(para.split()) > max_chunk_words:
+                    sentences = _split_into_sentences(para)
+                    sub_chunks = _repack_sentences_into_chunks(
+                        sentences, sentence_fallback_target_words
+                    )
+                    for sc in sub_chunks:
+                        chunk_inputs.append((sc, "sentence_split"))
+                    _chunk_stats["oversized_paragraphs_split"] += 1
+                    _chunk_stats["chunks_from_sentence_split"] += len(sub_chunks)
+                    any_split = True
+                else:
+                    chunk_inputs.append((para, "paragraph"))
+
+            if any_split:
+                _chunk_stats["documents_paragraph_with_split"] += 1
             else:
-                n_skipped += 1
-        if n_skipped:
-            print(
-                f"  {Path(pdf_path).name}: {len(chunks)} chunks kept, "
-                f"{n_skipped} short paragraphs filtered out "
-                f"(min_words={min_chunk_words})"
-            )
+                _chunk_stats["documents_paragraph_only"] += 1
+
+        # Apply floor and cap to all chunks regardless of how they were produced
+        for i, (text, method) in enumerate(chunk_inputs):
+            text = re.sub(r"\s+", " ", text).strip()
+            _chunk_stats["paragraphs_seen"] += 1
+
+            if not text:
+                _chunk_stats["paragraphs_empty"] += 1
+                continue
+            if len(text.split()) < min_chunk_words:
+                _chunk_stats["paragraphs_below_word_floor"] += 1
+                continue
+            if len(text) < min_chunk_chars:
+                _chunk_stats["paragraphs_below_char_floor"] += 1
+                continue
+
+            words = text.split()
+            was_truncated = False
+            if len(words) > max_chunk_words:
+                # Safety net: should not normally fire for sentence-split chunks
+                text = " ".join(words[:max_chunk_words])
+                was_truncated = True
+                _chunk_stats["paragraphs_truncated"] += 1
+
+            chunks.append({
+                "text": text,
+                "source_file": Path(pdf_path).name,
+                "chunk_index": i,
+                "word_count": len(text.split()),
+                "was_truncated": was_truncated,
+                "chunking_method": method,
+                "technology": metadata.get("technology", "Unknown"),
+                "technology_meta": metadata.get("technology", "Unknown"),
+                "year": metadata.get("year", None),
+            })
+            _chunk_stats["paragraphs_kept"] += 1
+
     except Exception as e:
         print(f"Error processing {Path(pdf_path).name}: {e}")
+
     return chunks
 
 
@@ -886,10 +1049,9 @@ def run_sensitivity(
     """
     try:
         from sklearn.cluster import KMeans  # type: ignore
-        from scipy.stats import entropy as shannon_entropy  # type: ignore
         import matplotlib.pyplot as plt  # type: ignore
     except ImportError as exc:
-        raise ImportError("scikit-learn, scipy, and matplotlib are required for sensitivity analysis.") from exc
+        raise ImportError("scikit-learn and matplotlib are required for sensitivity analysis.") from exc
 
     if kind not in ("concern", "benefit"):
         raise ValueError(f"kind must be 'concern' or 'benefit', got {kind!r}")
@@ -913,8 +1075,8 @@ def run_sensitivity(
     for cid in range(k):
         mask = run_df["cluster_id_k"] == cid
         tech_counts = run_df.loc[mask, tech_col].value_counts()
-        probs = (tech_counts / tech_counts.sum()).values if tech_counts.sum() > 0 else np.array([])
-        ent[cid] = float(shannon_entropy(probs)) if len(probs) > 1 else 0.0
+        probs = tech_counts.values if tech_counts.sum() > 0 else np.array([])
+        ent[cid] = normalized_entropy(probs)
 
     stable_df = pd.DataFrame({
         "cluster_id_k": list(range(k)),

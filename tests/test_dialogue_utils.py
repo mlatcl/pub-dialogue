@@ -1039,3 +1039,300 @@ class TestCrosscuttingThreshold:
 
     def test_constant_value_is_half(self):
         assert du.CROSSCUTTING_ENTROPY_THRESHOLD == 0.5
+
+
+# ===========================================================================
+# v19 Chunker helpers: _split_into_sentences and _repack_sentences_into_chunks
+# ===========================================================================
+
+class TestSplitIntoSentences:
+    def test_basic_split(self):
+        text = "The sky is blue. The grass is green. Stars are bright."
+        result = du._split_into_sentences(text)
+        assert len(result) == 3
+
+    def test_collapses_whitespace(self):
+        text = "First  sentence.\nSecond sentence."
+        result = du._split_into_sentences(text)
+        assert all("\n" not in s for s in result)
+
+    def test_empty_string(self):
+        assert du._split_into_sentences("") == []
+
+    def test_no_sentence_boundary(self):
+        text = "This is a single sentence with no terminator"
+        result = du._split_into_sentences(text)
+        assert len(result) == 1
+        assert result[0] == text
+
+
+class TestRepackSentencesIntoChunks:
+    def test_single_sentence_fits(self):
+        sentences = ["Short sentence."]
+        result = du._repack_sentences_into_chunks(sentences, target_words=300)
+        assert result == ["Short sentence."]
+
+    def test_multiple_sentences_packed_together(self):
+        sentences = ["Sentence one." for _ in range(5)]
+        result = du._repack_sentences_into_chunks(sentences, target_words=300)
+        # all five sentences fit well under 300 words, so should be one chunk
+        assert len(result) == 1
+        assert "Sentence one." in result[0]
+
+    def test_oversized_sentence_is_its_own_chunk(self):
+        big = " ".join(["word"] * 350)
+        sentences = ["Short intro.", big, "Short outro."]
+        result = du._repack_sentences_into_chunks(sentences, target_words=300)
+        # The oversized sentence should be its own chunk
+        assert any(len(c.split()) >= 300 for c in result)
+
+    def test_empty_input(self):
+        assert du._repack_sentences_into_chunks([], target_words=300) == []
+
+
+class TestParagraphSplit:
+    def test_double_newline_splits(self):
+        text = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
+        result = du._paragraph_split(text)
+        assert len(result) == 3
+
+    def test_collapses_internal_whitespace(self):
+        text = "First  para.\n\nSecond para."
+        result = du._paragraph_split(text)
+        assert all("  " not in p for p in result)
+
+    def test_empty_paragraphs_excluded(self):
+        text = "Para one.\n\n\n\nPara two."
+        result = du._paragraph_split(text)
+        assert len(result) == 2
+
+    def test_empty_string(self):
+        assert du._paragraph_split("") == []
+
+
+# ===========================================================================
+# v19 Three-case chunker: extract_chunks_from_pdf
+# ===========================================================================
+
+def _make_fitz_mock(text: str):
+    """Return a fake fitz module whose open() yields *text* from one page."""
+    import sys
+    page = MagicMock()
+    page.get_text.return_value = text
+    doc = MagicMock()
+    doc.__iter__ = MagicMock(return_value=iter([page]))
+    doc.close = MagicMock()
+    fake_fitz = MagicMock()
+    fake_fitz.open.return_value = doc
+    return fake_fitz
+
+
+class TestExtractChunksFromPdfV19:
+    """Tests for the v19 three-case hybrid chunker.
+
+    These tests inject a fake ``fitz`` module via ``sys.modules`` so no real
+    PDFs or PyMuPDF installation are required.
+    """
+
+    def _make_pdf_text(self, n_paragraphs: int, words_each: int = 60) -> str:
+        """Build a fake PDF text with *n_paragraphs* double-newline-separated paras."""
+        para = " ".join(["word"] * words_each)
+        return "\n\n".join([para] * n_paragraphs)
+
+    def _call_extractor(self, full_text: str, **kwargs):
+        """Call extract_chunks_from_pdf with a mocked fitz and return chunks."""
+        import sys
+        du.reset_chunk_stats()
+        fake_fitz = _make_fitz_mock(full_text)
+        with patch.dict(sys.modules, {"fitz": fake_fitz}):
+            return du.extract_chunks_from_pdf(
+                Path("fake.pdf"),
+                {"technology": "AI", "year": 2023},
+                **kwargs
+            )
+
+    # ---- Case 1: paragraph-only ------------------------------------------
+
+    def test_case1_all_chunks_are_paragraph_method(self):
+        """Clean paragraphs → all chunks labelled 'paragraph'."""
+        text = self._make_pdf_text(n_paragraphs=5, words_each=60)
+        chunks = self._call_extractor(text)
+        assert len(chunks) >= 3
+        assert all(c["chunking_method"] == "paragraph" for c in chunks)
+
+    def test_case1_stats_document_paragraph_only(self):
+        text = self._make_pdf_text(n_paragraphs=5, words_each=60)
+        self._call_extractor(text)
+        stats = du.get_chunk_stats()
+        assert stats["documents_paragraph_only"] == 1
+        assert stats["documents_sentence_fallback"] == 0
+        assert stats["documents_paragraph_with_split"] == 0
+
+    def test_case1_chunks_contain_was_truncated_field(self):
+        text = self._make_pdf_text(n_paragraphs=5, words_each=60)
+        chunks = self._call_extractor(text)
+        assert all("was_truncated" in c for c in chunks)
+        assert all(c["was_truncated"] is False for c in chunks)
+
+    # ---- Case 2: paragraph + internal sentence-split ---------------------
+
+    def test_case2_oversized_paragraph_is_split(self):
+        """One oversized paragraph → some chunks have 'sentence_split' method."""
+        normal = " ".join(["word"] * 60)
+        # Build a paragraph that exceeds MAX_CHUNK_WORDS (500) by using a text
+        # with clear sentence boundaries so the splitter can divide it.
+        big_para = (
+            "This is sentence one. " * 30
+        )  # ~120 words — use max_chunk_words=100 in call
+        text = f"{normal}\n\n{normal}\n\n{normal}\n\n{big_para}"
+        chunks = self._call_extractor(text, max_chunk_words=100,
+                                      sentence_fallback_target_words=50)
+        methods = {c["chunking_method"] for c in chunks}
+        assert "sentence_split" in methods
+        assert "paragraph" in methods
+
+    def test_case2_stats_paragraph_with_split(self):
+        normal = " ".join(["word"] * 60)
+        big_para = "This is sentence one. " * 30
+        text = f"{normal}\n\n{normal}\n\n{normal}\n\n{big_para}"
+        self._call_extractor(text, max_chunk_words=100,
+                             sentence_fallback_target_words=50)
+        stats = du.get_chunk_stats()
+        assert stats["documents_paragraph_with_split"] == 1
+        assert stats["documents_sentence_fallback"] == 0
+
+    # ---- Case 3: full sentence fallback ----------------------------------
+
+    def test_case3_no_paragraph_breaks_triggers_fallback(self):
+        """Text with no double-newlines → all chunks are 'sentence_fallback'."""
+        # Single block of text, no double newlines
+        text = ("This is sentence one. This is sentence two. " * 20)
+        chunks = self._call_extractor(text,
+                                      min_chunk_words=5,
+                                      min_chunk_chars=10,
+                                      sentence_fallback_min_paragraphs=3)
+        assert len(chunks) > 0
+        assert all(c["chunking_method"] == "sentence_fallback" for c in chunks)
+
+    def test_case3_stats_sentence_fallback(self):
+        text = "This is sentence one. This is sentence two. " * 20
+        self._call_extractor(text, min_chunk_words=5, min_chunk_chars=10,
+                             sentence_fallback_min_paragraphs=3)
+        stats = du.get_chunk_stats()
+        assert stats["documents_sentence_fallback"] == 1
+        assert stats["documents_paragraph_only"] == 0
+        assert stats["documents_paragraph_with_split"] == 0
+
+    # ---- General output schema -------------------------------------------
+
+    def test_chunks_contain_required_fields(self):
+        text = self._make_pdf_text(n_paragraphs=4, words_each=60)
+        chunks = self._call_extractor(text)
+        required = {"text", "source_file", "chunk_index", "word_count",
+                    "was_truncated", "chunking_method", "technology",
+                    "technology_meta", "year"}
+        for c in chunks:
+            assert required.issubset(c.keys()), f"Missing keys: {required - c.keys()}"
+
+    def test_chunks_below_word_floor_excluded(self):
+        """Chunks below min_chunk_words must not appear in the output."""
+        # Use paragraphs of 10 words with a floor of 20
+        text = self._make_pdf_text(n_paragraphs=5, words_each=10)
+        chunks = self._call_extractor(text, min_chunk_words=20)
+        assert all(c["word_count"] >= 20 for c in chunks)
+
+    def test_reset_chunk_stats_clears_accumulator(self):
+        text = self._make_pdf_text(n_paragraphs=4, words_each=60)
+        self._call_extractor(text)
+        du.reset_chunk_stats()
+        stats = du.get_chunk_stats()
+        assert all(v == 0 for v in stats.values())
+
+
+# ===========================================================================
+# Chunking constants (v19 defaults)
+# ===========================================================================
+
+class TestRunSensitivityEntropyConsistency:
+    """Verify run_sensitivity uses normalized_entropy (values in [0,1])."""
+
+    def _minimal_df(self, n: int = 30):
+        """Build a minimal concerns DataFrame with cluster_id and technology columns."""
+        techs = ["AI"] * (n // 2) + ["Nuclear"] * (n // 2)
+        return pd.DataFrame({
+            "concern": [f"phrase {i}" for i in range(n)],
+            "technology_meta": techs,
+            "cluster_id": list(range(n // 2)) * 2,
+            "year": [2022] * n,
+        })
+
+    def test_stable_core_entropy_values_in_unit_interval(self, tmp_path):
+        """Entropy column in the stable-core CSV must be in [0, 1]."""
+        df = self._minimal_df()
+        n_phrases = len(df)
+        embeddings = np.random.default_rng(0).random((n_phrases, 8))
+        # Normalise rows to unit length (as the pipeline does)
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        embeddings = embeddings / np.where(norms == 0, 1, norms)
+
+        du.run_sensitivity(
+            k=3,
+            kind="concern",
+            embeddings_normalized=embeddings,
+            df=df,
+            output_folder=tmp_path,
+        )
+
+        csv_path = tmp_path / "concern_sensitivity_stable_core_k3.csv"
+        assert csv_path.exists(), "stable-core CSV not written"
+        stable = pd.read_csv(csv_path)
+        assert "tech_entropy" in stable.columns
+        assert (stable["tech_entropy"] >= 0).all(), "entropy below 0"
+        assert (stable["tech_entropy"] <= 1).all(), "entropy above 1"
+
+    def test_uniform_technology_cluster_entropy_above_threshold(self, tmp_path):
+        """A cluster spread equally across technologies should score > 0.5."""
+        n = 40
+        # 4 technologies, 10 phrases each, all in the same cluster
+        techs = ["AI"] * 10 + ["Nuclear"] * 10 + ["Genetic"] * 10 + ["Nano"] * 10
+        df = pd.DataFrame({
+            "concern": [f"phrase {i}" for i in range(n)],
+            "technology_meta": techs,
+            "cluster_id": [0] * n,
+            "year": [2022] * n,
+        })
+        embeddings = np.random.default_rng(1).random((n, 8))
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        embeddings = embeddings / np.where(norms == 0, 1, norms)
+
+        du.run_sensitivity(
+            k=2,
+            kind="concern",
+            embeddings_normalized=embeddings,
+            df=df,
+            output_folder=tmp_path,
+        )
+
+        stable = pd.read_csv(tmp_path / "concern_sensitivity_stable_core_k2.csv")
+        # The cluster with all 4 technologies equally should have high entropy
+        max_entropy = stable["tech_entropy"].max()
+        assert max_entropy > 0.5, (
+            f"Expected at least one cluster with entropy > 0.5; got max={max_entropy}"
+        )
+
+
+class TestChunkingConstants:
+    def test_min_chunk_words_is_40(self):
+        assert du.MIN_CHUNK_WORDS == 40
+
+    def test_min_chunk_chars_is_80(self):
+        assert du.MIN_CHUNK_CHARS == 80
+
+    def test_max_chunk_words_is_500(self):
+        assert du.MAX_CHUNK_WORDS == 500
+
+    def test_sentence_fallback_target_is_300(self):
+        assert du.SENTENCE_FALLBACK_TARGET_WORDS == 300
+
+    def test_sentence_fallback_min_paragraphs_is_3(self):
+        assert du.SENTENCE_FALLBACK_MIN_PARAGRAPHS == 3
