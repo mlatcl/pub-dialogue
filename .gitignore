@@ -1,4 +1,7 @@
 
+# Secrets — never commit
+.env
+
 # Project data directories (large files, not committed)
 pdfs/
 outputs/
