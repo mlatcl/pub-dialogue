@@ -3,7 +3,7 @@ author: "Neil Lawrence"
 created: "2026-05-12"
 id: "000D"
 last_updated: "2026-05-12"
-status: "Proposed"
+status: "Implemented"
 compressed: false
 related_requirements: ["0006"]
 related_cips: ["000A", "000B", "000C"]
@@ -22,8 +22,8 @@ title: "Restructure pub_dialogue package into access/assess/address modules"
 
 - [x] Proposed - Initial idea documented
 - [x] Accepted - Approved, ready to start work
-- [ ] In Progress - Actively being implemented
-- [ ] Implemented - Work complete, awaiting verification
+- [x] In Progress - Actively being implemented
+- [x] Implemented - Work complete, awaiting verification
 - [ ] Closed - Verified and complete
 - [ ] Rejected - Will not be implemented
 - [ ] Deferred - Postponed

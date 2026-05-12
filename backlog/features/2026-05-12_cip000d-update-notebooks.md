@@ -1,7 +1,7 @@
 ---
 id: "2026-05-12_cip000d-update-notebooks"
 title: "Update notebooks to use pub_dialogue.access/assess/address module imports"
-status: "Proposed"
+status: "Completed"
 priority: "High"
 created: "2026-05-12"
 last_updated: "2026-05-12"
