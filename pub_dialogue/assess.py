@@ -156,7 +156,6 @@ def plot_data_quality(
     plt.tight_layout()
     out_path = output_folder / filename
     plt.savefig(out_path, dpi=dpi)
-    plt.close(fig)
 
     return out_path
 
