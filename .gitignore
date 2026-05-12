@@ -3,9 +3,12 @@
 pdfs/
 outputs/
 checkpoints/
+data/
 __pycache__/
 *.pyc
 .pymupdf_target/
+.venv/
+.ipynb_checkpoints/
 
 # VibeSafe System Files (Auto-added during installation)
 # These are VibeSafe infrastructure - not your project content
