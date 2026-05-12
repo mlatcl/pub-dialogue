@@ -15,6 +15,7 @@ Test categories:
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from pub_dialogue.client import LLMClient
 
 import numpy as np
 import pandas as pd
@@ -515,19 +516,8 @@ class TestCheckpoints:
 
 
 # ===========================================================================
-# Extraction — mocked OpenAI client
+# Extraction — mocked LLMClient
 # ===========================================================================
-
-def _make_response(content: str):
-    """Build a minimal mock OpenAI chat completion response."""
-    msg = MagicMock()
-    msg.content = content
-    choice = MagicMock()
-    choice.message = msg
-    resp = MagicMock()
-    resp.choices = [choice]
-    return resp
-
 
 def _make_row(chunk_id: str = "c001", text: str = "Some paragraph text."):
     import pandas as pd
@@ -535,12 +525,16 @@ def _make_row(chunk_id: str = "c001", text: str = "Some paragraph text."):
     return (0, row)
 
 
+def _mock_client(complete_return: str = "") -> MagicMock:
+    """Return a MagicMock(spec=LLMClient) with complete() pre-configured."""
+    client = MagicMock(spec=LLMClient)
+    client.complete.return_value = complete_return
+    return client
+
+
 class TestExtractPhrases:
     def test_concern_normal_extraction(self):
-        client = MagicMock()
-        client.chat.completions.create.return_value = _make_response(
-            "job loss risk\nworkplace automation anxiety"
-        )
+        client = _mock_client("job loss risk\nworkplace automation anxiety")
         result = du.extract_phrases(_make_row(), kind="concern", client=client)
         assert isinstance(result, du.ExtractionResult)
         assert result.sentinel_returned is False
@@ -548,32 +542,24 @@ class TestExtractPhrases:
         assert "job loss risk" in result.retained_phrases
 
     def test_benefit_normal_extraction(self):
-        client = MagicMock()
-        client.chat.completions.create.return_value = _make_response(
-            "faster medical diagnosis"
-        )
+        client = _mock_client("faster medical diagnosis")
         result = du.extract_phrases(_make_row(), kind="benefit", client=client)
         assert "faster medical diagnosis" in result.retained_phrases
         assert result.sentinel_returned is False
 
     def test_sentinel_concern_returns_empty(self):
-        client = MagicMock()
-        client.chat.completions.create.return_value = _make_response("NO_CONCERN")
+        client = _mock_client("NO_CONCERN")
         result = du.extract_phrases(_make_row(), kind="concern", client=client)
         assert result.sentinel_returned is True
         assert result.retained_phrases == []
 
     def test_sentinel_benefit_returns_empty(self):
-        client = MagicMock()
-        client.chat.completions.create.return_value = _make_response("NO_BENEFIT")
+        client = _mock_client("NO_BENEFIT")
         result = du.extract_phrases(_make_row(), kind="benefit", client=client)
         assert result.sentinel_returned is True
 
     def test_tech_word_filter_drops_phrase(self):
-        client = MagicMock()
-        client.chat.completions.create.return_value = _make_response(
-            "concerns about ai systems\nprivacy risks"
-        )
+        client = _mock_client("concerns about ai systems\nprivacy risks")
         result = du.extract_phrases(
             _make_row(), kind="concern", client=client,
             tech_words=["ai"]
@@ -582,23 +568,20 @@ class TestExtractPhrases:
         assert any("ai" in drop[1] for drop in result.dropped_by_filter)
 
     def test_api_error_captured(self):
-        client = MagicMock()
-        client.chat.completions.create.side_effect = ConnectionError("timeout")
+        client = MagicMock(spec=LLMClient)
+        client.complete.side_effect = ConnectionError("timeout")
         result = du.extract_phrases(_make_row(), kind="concern", client=client)
         assert result.error is not None
         assert "timeout" in result.error
         assert result.retained_phrases == []
 
     def test_invalid_kind_raises(self):
-        client = MagicMock()
+        client = _mock_client()
         with pytest.raises(ValueError, match="kind must be"):
             du.extract_phrases(_make_row(), kind="question", client=client)
 
     def test_raw_phrases_populated(self):
-        client = MagicMock()
-        client.chat.completions.create.return_value = _make_response(
-            "privacy risks\nconcerns about artificial intelligence"
-        )
+        client = _mock_client("privacy risks\nconcerns about artificial intelligence")
         result = du.extract_phrases(
             _make_row(), kind="concern", client=client,
             tech_words=["artificial intelligence"]
@@ -609,7 +592,7 @@ class TestExtractPhrases:
 
 
 # ===========================================================================
-# Cluster labelling — mocked OpenAI client
+# Cluster labelling — mocked LLMClient
 # ===========================================================================
 
 class TestLabelCluster:
@@ -621,8 +604,7 @@ class TestLabelCluster:
         ]
 
     def test_concern_labelling(self):
-        client = MagicMock()
-        client.chat.completions.create.return_value = _make_response(
+        client = _mock_client(
             '{"label": "Employment displacement", "description": "Fear of job losses.", "key_terms": ["jobs", "automation"]}'
         )
         result = du.label_cluster(1, self._exemplars("concern"), True, kind="concern", client=client)
@@ -630,8 +612,7 @@ class TestLabelCluster:
         assert result["label"] == "Employment displacement"
 
     def test_benefit_labelling(self):
-        client = MagicMock()
-        client.chat.completions.create.return_value = _make_response(
+        client = _mock_client(
             '{"label": "Faster healthcare", "description": "Improved diagnostics.", "key_terms": ["health", "speed"]}'
         )
         result = du.label_cluster(2, self._exemplars("benefit"), False, kind="benefit", client=client)
@@ -639,8 +620,8 @@ class TestLabelCluster:
         assert result["label"] == "Faster healthcare"
 
     def test_api_error_returns_fallback(self):
-        client = MagicMock()
-        client.chat.completions.create.side_effect = Exception("API error")
+        client = MagicMock(spec=LLMClient)
+        client.complete.side_effect = Exception("API error")
         result = du.label_cluster(99, self._exemplars(), True, kind="concern", client=client)
         assert result["success"] is False
         assert "Cluster 99" in result["label"]
@@ -655,27 +636,22 @@ class TestLabelCluster:
 
 
 # ===========================================================================
-# Embeddings — mocked OpenAI client
+# Embeddings — mocked LLMClient
 # ===========================================================================
 
 class TestGetEmbeddingsBatch:
     def test_returns_numpy_array(self):
-        client = MagicMock()
-        fake_item = MagicMock()
-        fake_item.embedding = [0.1, 0.2, 0.3]
-        client.embeddings.create.return_value = MagicMock(data=[fake_item, fake_item])
+        client = MagicMock(spec=LLMClient)
+        client.embed.return_value = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
         result = du.get_embeddings_batch(["hello", "world"], client=client)
         assert isinstance(result, np.ndarray)
         assert result.shape == (2, 3)
 
-    def test_correct_model_passed(self):
-        client = MagicMock()
-        fake_item = MagicMock()
-        fake_item.embedding = [0.0]
-        client.embeddings.create.return_value = MagicMock(data=[fake_item])
-        du.get_embeddings_batch(["text"], client=client, model="text-embedding-3-large")
-        call_kwargs = client.embeddings.create.call_args[1]
-        assert call_kwargs["model"] == "text-embedding-3-large"
+    def test_embed_called_with_texts(self):
+        client = MagicMock(spec=LLMClient)
+        client.embed.return_value = [[0.0]]
+        du.get_embeddings_batch(["text"], client=client)
+        client.embed.assert_called_once_with(["text"])
 
 
 # ===========================================================================
@@ -955,8 +931,7 @@ class TestChunkingFilter:
 
 class TestTechWordBoundaryMatching:
     def _extract(self, phrase_text, tech_words):
-        client = MagicMock()
-        client.chat.completions.create.return_value = _make_response(phrase_text)
+        client = _mock_client(phrase_text)
         return du.extract_phrases(_make_row(), kind="concern", client=client, tech_words=tech_words)
 
     def test_gm_does_not_match_stigma(self):
@@ -994,13 +969,13 @@ class TestLabelClusterNoTechLeak:
 
     def test_prompt_does_not_contain_technology_name(self):
         """The LLM prompt must not include '(from AI)' or '(from Nuclear)'."""
-        client = MagicMock()
-        client.chat.completions.create.return_value = _make_response(
+        client = MagicMock(spec=LLMClient)
+        client.complete.return_value = (
             '{"label": "Employment", "description": "Jobs.", "key_terms": ["jobs"]}'
         )
         du.label_cluster(1, self._exemplars(), True, kind="concern", client=client)
-        call_args = client.chat.completions.create.call_args
-        messages = call_args[1]["messages"] if "messages" in call_args[1] else call_args[0][0]
+        call_args = client.complete.call_args
+        messages = call_args[0][0]  # first positional arg is the messages list
         full_prompt = " ".join(
             m["content"] for m in messages if isinstance(m.get("content"), str)
         )
@@ -1010,13 +985,13 @@ class TestLabelClusterNoTechLeak:
 
     def test_phrase_text_still_included(self):
         """The exemplar phrases themselves must still appear in the prompt."""
-        client = MagicMock()
-        client.chat.completions.create.return_value = _make_response(
+        client = MagicMock(spec=LLMClient)
+        client.complete.return_value = (
             '{"label": "Employment", "description": "Jobs.", "key_terms": ["jobs"]}'
         )
         du.label_cluster(1, self._exemplars(), True, kind="concern", client=client)
-        call_args = client.chat.completions.create.call_args
-        messages = call_args[1]["messages"] if "messages" in call_args[1] else call_args[0][0]
+        call_args = client.complete.call_args
+        messages = call_args[0][0]
         full_prompt = " ".join(
             m["content"] for m in messages if isinstance(m.get("content"), str)
         )
@@ -1600,3 +1575,75 @@ class TestLoadArtifacts:
         out.mkdir(); ckpt.mkdir()
         with pytest.raises((FileNotFoundError, OSError)):
             du.load_artifacts(out, ckpt)
+
+
+# ===========================================================================
+# LLMClient wrapper — mocked litellm
+# ===========================================================================
+
+class TestLLMClient:
+    """Tests for pub_dialogue.client.LLMClient.
+
+    litellm is patched at the module level inside each method (lazy import),
+    so we patch it on the client module, not at the top-level import.
+    """
+
+    def _make_litellm_completion(self, content: str):
+        resp = MagicMock()
+        resp.choices[0].message.content = content
+        return resp
+
+    def _make_litellm_embedding(self, vectors: list):
+        resp = MagicMock()
+        resp.data = [MagicMock(embedding=v) for v in vectors]
+        return resp
+
+    def test_complete_returns_string(self):
+        client = LLMClient(model="gpt-4o-mini")
+        with patch("litellm.completion") as mock_comp:
+            mock_comp.return_value = self._make_litellm_completion("hello world")
+            result = client.complete([{"role": "user", "content": "Hi"}])
+        assert result == "hello world"
+
+    def test_complete_passes_model_and_messages(self):
+        client = LLMClient(model="claude-3-5-haiku-latest")
+        with patch("litellm.completion") as mock_comp:
+            mock_comp.return_value = self._make_litellm_completion("ok")
+            client.complete([{"role": "user", "content": "test"}], max_tokens=100)
+        mock_comp.assert_called_once_with(
+            model="claude-3-5-haiku-latest",
+            messages=[{"role": "user", "content": "test"}],
+            max_tokens=100,
+        )
+
+    def test_embed_returns_list_of_vectors(self):
+        client = LLMClient(embedding_model="text-embedding-3-large")
+        vecs = [[0.1, 0.2], [0.3, 0.4]]
+        with patch("litellm.embedding") as mock_emb:
+            mock_emb.return_value = self._make_litellm_embedding(vecs)
+            result = client.embed(["hello", "world"])
+        assert result == vecs
+
+    def test_embed_passes_embedding_model(self):
+        client = LLMClient(embedding_model="text-embedding-3-large")
+        with patch("litellm.embedding") as mock_emb:
+            mock_emb.return_value = self._make_litellm_embedding([[0.0]])
+            client.embed(["text"])
+        mock_emb.assert_called_once_with(
+            model="text-embedding-3-large", input=["text"]
+        )
+
+    @pytest.mark.parametrize("model", [
+        "gpt-4o-mini",
+        "claude-3-5-haiku-latest",
+        "gemini/gemini-2.0-flash",
+    ])
+    def test_provider_routing_no_import_error(self, model):
+        """Constructing LLMClient with any provider string must not raise."""
+        client = LLMClient(model=model)
+        assert client.model == model
+
+    def test_default_model(self):
+        client = LLMClient()
+        assert client.model == "gpt-4o-mini"
+        assert client.embedding_model == "text-embedding-3-large"

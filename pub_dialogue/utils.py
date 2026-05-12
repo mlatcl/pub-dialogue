@@ -619,7 +619,6 @@ def extract_phrases(
     kind: str,
     client,
     tech_words: Optional[List[str]] = None,
-    model: str = "gpt-4o-mini",
     max_tokens: int = 500,
 ) -> ExtractionResult:
     """Extract decontextualised concern or benefit phrases from one paragraph.
@@ -635,11 +634,9 @@ def extract_phrases(
     kind:
         ``'concern'`` or ``'benefit'``.
     client:
-        Initialised OpenAI client.
+        :class:`~pub_dialogue.client.LLMClient` instance.
     tech_words:
         Substring filter list. Defaults to DEFAULT_TECH_WORDS.
-    model:
-        OpenAI model name.
     max_tokens:
         Maximum completion tokens.
 
@@ -663,16 +660,12 @@ def extract_phrases(
         else "Extract public benefits. Be concise. Remove technology-specific language."
     )
 
+    messages = [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": prompt_template.format(text=str(row["text"])[:2000])},
+    ]
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": prompt_template.format(text=str(row["text"])[:2000])},
-            ],
-            max_completion_tokens=max_tokens,
-        )
-        content = response.choices[0].message.content
+        content = client.complete(messages, max_tokens=max_tokens)
         if content is None:
             return ExtractionResult(chunk_id=chunk_id, sentinel_returned=True)
 
@@ -877,20 +870,18 @@ def filter_missing_source_text(df: pd.DataFrame, text_col: str = "text") -> pd.D
     return df[~mask_missing].copy()
 
 
-def get_embeddings_batch(texts: List[str], client, model: str = "text-embedding-3-small") -> np.ndarray:
-    """Return a (len(texts), dim) array of embeddings from the OpenAI API.
+def get_embeddings_batch(texts: List[str], client) -> np.ndarray:
+    """Return a (len(texts), dim) array of embeddings.
 
     Parameters
     ----------
     texts:
         List of strings to embed.
     client:
-        Initialised OpenAI client.
-    model:
-        Embedding model name.
+        :class:`~pub_dialogue.client.LLMClient` instance.  The embedding
+        model is configured on the client via ``embedding_model``.
     """
-    response = client.embeddings.create(input=texts, model=model)
-    return np.array([item.embedding for item in response.data])
+    return np.array(client.embed(texts))
 
 
 # ---------------------------------------------------------------------------
@@ -903,7 +894,6 @@ def label_cluster(
     is_cross_cutting: bool,
     kind: str = "concern",
     client=None,
-    model: str = "gpt-4o-mini",
 ) -> Dict[str, Any]:
     """Generate a label, description, and key terms for a cluster via LLM.
 
@@ -919,9 +909,8 @@ def label_cluster(
     kind:
         ``'concern'`` or ``'benefit'``.
     client:
-        Initialised OpenAI client.
-    model:
-        OpenAI model name.
+        :class:`~pub_dialogue.client.LLMClient` instance, or ``None`` to
+        return the fallback label immediately.
     """
     if kind not in ("concern", "benefit"):
         raise ValueError(f"kind must be 'concern' or 'benefit', got {kind!r}")
@@ -949,16 +938,12 @@ def label_cluster(
     fallback = {"label": f"Cluster {cluster_id}", "description": "", "key_terms": [], "success": False}
     if client is None:
         return fallback
+    messages = [
+        {"role": "system", "content": "Expert qualitative researcher. Return only valid JSON."},
+        {"role": "user", "content": prompt},
+    ]
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "Expert qualitative researcher. Return only valid JSON."},
-                {"role": "user", "content": prompt},
-            ],
-            max_completion_tokens=1000,
-        )
-        content = response.choices[0].message.content
+        content = client.complete(messages, max_tokens=1000)
         if not content or not content.strip():
             return fallback
         content = content.strip()

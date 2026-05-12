@@ -48,8 +48,8 @@ Click the badge above. The notebook will:
 2. Fetch `dialogue_utils.py` from this repository
 3. Download the PDF corpus and metadata from Google Drive
 
-You will need to provide an **OpenAI API key** (stored as a Colab secret named
-`OPENAI_API_KEY`, or pasted when prompted).
+You will need to provide an API key for your chosen LLM provider (stored as a
+Colab secret or in a local `.env` file — see [Supported LLM providers](#supported-llm-providers) below).
 
 ## Repository structure
 
@@ -64,14 +64,33 @@ You will need to provide an **OpenAI API key** (stored as a Colab secret named
 | `backlog/` | Task tracking — bugs and features |
 | `requirements/` | Project requirements |
 
+## Supported LLM providers
+
+The pipeline uses [`litellm`](https://docs.litellm.ai/) so you can switch
+providers by changing a single config variable (`LLM_MODEL`) in the notebook.
+
+| Provider | Example `LLM_MODEL` | Required env-var |
+|---|---|---|
+| OpenAI (default) | `gpt-4o-mini` | `OPENAI_API_KEY` |
+| Anthropic | `claude-3-5-haiku-latest` | `ANTHROPIC_API_KEY` |
+| Google Gemini | `gemini/gemini-2.0-flash` | `GOOGLE_API_KEY` |
+
+For the full list of supported models see the
+[litellm provider docs](https://docs.litellm.ai/docs/providers).
+
+> **Note on embeddings**: `EMBEDDING_MODEL` (default `text-embedding-3-large`)
+> is intentionally separate from `LLM_MODEL`.  Changing it invalidates all
+> saved `*.npy` embedding artifacts and requires a full re-run of
+> `01_processing.ipynb`.
+
 ## Running locally
 
 ```bash
 git clone https://github.com/mlatcl/pub-dialogue.git
 cd pub-dialogue
-pip install PyMuPDF openai scikit-learn umap-learn plotly kaleido openpyxl tqdm scipy
-export OPENAI_API_KEY=your-key-here
-jupyter notebook public_dialogue_analyser_v19.ipynb
+pip install -e ".[dev]"
+cp .env.example .env   # then add your API key(s)
+jupyter notebook 01_processing.ipynb
 ```
 
 ## Running tests

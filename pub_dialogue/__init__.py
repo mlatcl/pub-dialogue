@@ -12,6 +12,8 @@ Key functions are also available directly from this package::
 
 __version__ = "0.1.0"
 
+from pub_dialogue.client import LLMClient  # noqa: F401
+
 # Convenience re-exports of the most-used names
 from pub_dialogue.utils import (  # noqa: F401
     # I/O
