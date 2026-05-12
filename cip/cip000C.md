@@ -19,7 +19,7 @@ title: "Multi-LLM provider support via litellm"
 ## Status
 
 - [x] Proposed - Initial idea documented
-- [ ] Accepted - Approved, ready to start work
+- [x] Accepted - Approved, ready to start work
 - [ ] In Progress - Actively being implemented
 - [ ] Implemented - Work complete, awaiting verification
 - [ ] Closed - Verified and complete
