@@ -17,7 +17,7 @@ compressed: false
 ## Status
 
 - [x] Proposed - Initial idea documented
-- [ ] Accepted - Approved, ready to start work
+- [x] Accepted - Approved, ready to start work
 - [ ] In Progress - Implementation underway
 - [ ] Implemented - Code changes complete
 - [ ] Closed - Implementation reviewed and merged
