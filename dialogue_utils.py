@@ -8,10 +8,11 @@ module and calls functions via `import dialogue_utils as du`.
 Public API (grouped by responsibility):
   I/O & display:
     show_status, show_complete, show_warning
-    save_checkpoint, load_checkpoint
+    save_checkpoint, load_checkpoint, load_artifacts
   Corpus ingestion:
     extract_chunks_from_pdf
     reset_chunk_stats, get_chunk_stats
+    _extract_paragraphs_from_blocks, _paragraph_split
   Extraction:
     ExtractionResult (dataclass)
     extract_phrases
@@ -226,6 +227,81 @@ def load_checkpoint(checkpoint_path: Path) -> Optional[Any]:
     return None
 
 
+def load_artifacts(output_folder: Path, checkpoint_folder: Path) -> dict:
+    """Load all pre-computed analysis artifacts from disk.
+
+    Intended for analysis notebooks (02–05) that must boot entirely from saved
+    files without calling the OpenAI API or re-running k-means.  Call once at
+    the top of each analysis notebook and unpack the returned dict into local
+    variables.
+
+    Parameters
+    ----------
+    output_folder:
+        Directory containing CSV/JSON/PNG outputs (typically ``outputs/``).
+    checkpoint_folder:
+        Directory containing binary checkpoints (``*.npy``, ``*.json``)
+        written during processing (typically ``checkpoints/``).
+
+    Returns
+    -------
+    dict with keys:
+        chunks_df, concerns_df, benefits_df,
+        concern_embeddings, concern_ids,
+        benefit_embeddings, benefit_ids,
+        concern_centroids, benefit_centroids,
+        cluster_labels, cluster_summary_df,
+        benefit_cluster_labels, benefit_cluster_summary_df,
+        framing_lens_mappings, benefit_framing_lens_mappings,
+        cluster_entropy, cluster_entropy_norm, cross_cutting_clusters,
+        benefit_cluster_entropy, normalized_entropy_benefits,
+        cross_cutting_clusters_benefits.
+    """
+    out = Path(output_folder)
+    ckpt = Path(checkpoint_folder)
+    a: Dict[str, Any] = {}
+
+    # DataFrames from CSV
+    a["chunks_df"]   = pd.read_csv(out / "paragraph_chunks.csv")
+    a["concerns_df"] = pd.read_csv(out / "extracted_concerns.csv")
+    a["benefits_df"] = pd.read_csv(out / "extracted_benefits.csv")
+    a["cluster_summary_df"]         = pd.read_csv(out / "cluster_summary.csv")
+    a["benefit_cluster_summary_df"] = pd.read_csv(out / "benefit_cluster_summary.csv")
+
+    # Numpy arrays from checkpoints
+    a["concern_embeddings"]  = np.load(ckpt / "concern_embeddings.npy")
+    a["benefit_embeddings"]  = np.load(ckpt / "benefit_embeddings.npy")
+    a["concern_centroids"]   = np.load(ckpt / "cluster_centroids.npy")
+    a["benefit_centroids"]   = np.load(ckpt / "benefit_cluster_centroids.npy")
+
+    # JSON files — ids and mappings
+    for name, path in [
+        ("concern_ids",                   ckpt / "concern_ids.json"),
+        ("benefit_ids",                   ckpt / "benefit_ids.json"),
+        ("cluster_labels",                out  / "cluster_labels.json"),
+        ("benefit_cluster_labels",        out  / "benefit_cluster_labels.json"),
+        ("framing_lens_mappings",         out  / "framing_lens_mappings.json"),
+        ("benefit_framing_lens_mappings", out  / "benefit_framing_lens_mappings.json"),
+    ]:
+        with open(path) as _f:
+            a[name] = json.load(_f)
+
+    # Entropy dicts (written by 01_processing.ipynb via add-entropy-saves task)
+    with open(out / "cluster_entropy.json") as _f:
+        _d = json.load(_f)
+        a["cluster_entropy"]        = {int(k): v for k, v in _d["raw"].items()}
+        a["cluster_entropy_norm"]   = {int(k): v for k, v in _d["norm"].items()}
+        a["cross_cutting_clusters"] = _d["cross_cutting"]
+
+    with open(out / "benefit_cluster_entropy.json") as _f:
+        _d = json.load(_f)
+        a["benefit_cluster_entropy"]         = {int(k): v for k, v in _d["raw"].items()}
+        a["normalized_entropy_benefits"]     = {int(k): v for k, v in _d["norm"].items()}
+        a["cross_cutting_clusters_benefits"] = _d["cross_cutting"]
+
+    return a
+
+
 # ---------------------------------------------------------------------------
 # Corpus ingestion — v19 three-case hybrid chunker
 # ---------------------------------------------------------------------------
@@ -244,6 +320,9 @@ _chunk_stats: Dict[str, int] = {
     "oversized_paragraphs_split": 0,
     "chunks_from_sentence_split": 0,
     "chunks_from_sentence_fallback": 0,
+    # paragraph-source tracking (v20)
+    "documents_blocks_primary": 0,       # blocks mode produced enough paragraphs
+    "documents_text_newline_primary": 0, # fell back to double-newline text split
 }
 
 
@@ -291,6 +370,31 @@ def _repack_sentences_into_chunks(sentences: List[str], target_words: int) -> Li
     return chunks
 
 
+def _extract_paragraphs_from_blocks(doc) -> List[str]:
+    """Layout-aware paragraph extraction using PyMuPDF's block detection.
+
+    Each text block identified by PyMuPDF (``page.get_text("blocks")``) is
+    treated as one paragraph candidate.  This uses the PDF's geometry — gaps
+    between runs of text — rather than relying on ``\\n\\n`` being present in
+    the text stream.  Works for PDFs where paragraph breaks are implicit in the
+    layout but not encoded as double-newlines.
+
+    Block tuples: ``(x0, y0, x1, y1, text, block_no, block_type)``
+    ``block_type == 0`` means text; ``block_type == 1`` means image.
+
+    Returns a list of non-empty, whitespace-normalised paragraph strings.
+    """
+    paragraphs = []
+    for page in doc:
+        for block in page.get_text("blocks"):
+            if block[6] != 0:  # skip image blocks
+                continue
+            text = re.sub(r"\s+", " ", block[4]).strip()
+            if text:
+                paragraphs.append(text)
+    return paragraphs
+
+
 def _paragraph_split(full_text: str) -> List[str]:
     """Split *full_text* on double-newlines; return non-empty cleaned paragraphs."""
     paragraphs = re.split(r"\n\s*\n", full_text)
@@ -325,10 +429,18 @@ def extract_chunks_from_pdf(
         of ≈ *sentence_fallback_target_words* words.
 
     Case 3 — Full sentence-level fallback:
-        Double-newline splitting produces fewer than
-        *sentence_fallback_min_paragraphs* substantive paragraphs (the PDF
-        lacks paragraph-break encoding).  The entire document is
-        sentence-split and repacked.
+        Neither block extraction nor double-newline splitting produces
+        *sentence_fallback_min_paragraphs* substantive paragraphs.  The
+        entire document is sentence-split and repacked.
+
+    Paragraph detection uses a two-tier approach:
+
+    1. **Blocks-primary** (``page.get_text("blocks")``): uses PyMuPDF's
+       layout geometry to identify paragraph boundaries, working even when
+       the PDF text stream lacks ``\\n\\n`` encoding.  This is tried first.
+    2. **Text-newline fallback** (``_paragraph_split``): splits the full
+       plain-text string on double-newlines.  Used only when blocks produce
+       fewer than *sentence_fallback_min_paragraphs* substantive segments.
 
     Each returned chunk dict includes a ``chunking_method`` key:
     ``"paragraph"``, ``"sentence_split"``, or ``"sentence_fallback"``.
@@ -364,10 +476,28 @@ def extract_chunks_from_pdf(
 
     try:
         doc = fitz.open(pdf_path)
+
+        # Extract both block paragraphs and plain text in a single pass so the
+        # doc only needs to be opened once.
+        block_paragraphs = _extract_paragraphs_from_blocks(doc)
         full_text = "".join(page.get_text() for page in doc)
         doc.close()
 
-        paragraphs = _paragraph_split(full_text)
+        # Primary paragraph source: PyMuPDF layout blocks (geometry-aware).
+        # Falls back to double-newline text splitting for PDFs where the blocks
+        # API returns very few segments (e.g. single-column scans presented as
+        # one huge block).
+        block_substantive = [
+            p for p in block_paragraphs
+            if len(p.split()) >= min_chunk_words and len(p) >= min_chunk_chars
+        ]
+        if len(block_substantive) >= sentence_fallback_min_paragraphs:
+            paragraphs = block_paragraphs
+            _chunk_stats["documents_blocks_primary"] += 1
+        else:
+            paragraphs = _paragraph_split(full_text)
+            _chunk_stats["documents_text_newline_primary"] += 1
+
         substantive = [
             p for p in paragraphs
             if len(p.split()) >= min_chunk_words and len(p) >= min_chunk_chars

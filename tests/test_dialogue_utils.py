@@ -1115,12 +1115,26 @@ class TestParagraphSplit:
 # ===========================================================================
 
 def _make_fitz_mock(text: str):
-    """Return a fake fitz module whose open() yields *text* from one page."""
-    import sys
+    """Return a fake fitz module whose open() yields *text* from one page.
+
+    The page's ``get_text`` handles both plain-text (``get_text()``) and
+    blocks (``get_text("blocks")``) modes.  For blocks mode, each
+    double-newline-separated paragraph is returned as a single text block
+    tuple ``(0, i, 100, i+1, para_text, i, 0)``, so the blocks path
+    produces the same paragraphs as the text-newline path.
+    """
+    def _get_text(mode=None):
+        if mode == "blocks":
+            paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+            return [(0, i, 100, i + 1, p, i, 0) for i, p in enumerate(paras)]
+        return text
+
     page = MagicMock()
-    page.get_text.return_value = text
+    page.get_text.side_effect = _get_text
     doc = MagicMock()
-    doc.__iter__ = MagicMock(return_value=iter([page]))
+    # Use side_effect so each iteration gets a fresh iterator (the doc is
+    # iterated twice: once for blocks, once for plain text).
+    doc.__iter__ = MagicMock(side_effect=lambda: iter([page]))
     doc.close = MagicMock()
     fake_fitz = MagicMock()
     fake_fitz.open.return_value = doc
@@ -1131,7 +1145,10 @@ class TestExtractChunksFromPdfV19:
     """Tests for the v19 three-case hybrid chunker.
 
     These tests inject a fake ``fitz`` module via ``sys.modules`` so no real
-    PDFs or PyMuPDF installation are required.
+    PDFs or PyMuPDF installation are required.  The mock returns blocks that
+    match the double-newline paragraph structure, so the blocks-primary path
+    is exercised for tests that have proper paragraph breaks, and the
+    sentence-fallback path is exercised for tests with no paragraph breaks.
     """
 
     def _make_pdf_text(self, n_paragraphs: int, words_each: int = 60) -> str:
@@ -1321,6 +1338,136 @@ class TestRunSensitivityEntropyConsistency:
         )
 
 
+class TestExtractParagraphsFromBlocks:
+    """Tests for _extract_paragraphs_from_blocks — the layout-aware extractor."""
+
+    def _make_doc_with_blocks(self, block_texts: list):
+        """Build a mock fitz doc where get_text('blocks') returns block_texts."""
+        blocks = []
+        for i, text in enumerate(block_texts):
+            # (x0, y0, x1, y1, text, block_no, block_type=0)
+            blocks.append((0, i * 20, 100, (i + 1) * 20, text, i, 0))
+
+        page = MagicMock()
+        page.get_text.return_value = blocks  # called with "blocks"
+
+        doc = MagicMock()
+        doc.__iter__ = MagicMock(return_value=iter([page]))
+        return doc
+
+    def test_returns_text_from_each_block(self):
+        doc = self._make_doc_with_blocks(["First para.", "Second para.", "Third para."])
+        result = du._extract_paragraphs_from_blocks(doc)
+        assert result == ["First para.", "Second para.", "Third para."]
+
+    def test_skips_image_blocks(self):
+        page = MagicMock()
+        page.get_text.return_value = [
+            (0, 0, 100, 20, "Text block.", 0, 0),   # block_type=0 → include
+            (0, 20, 100, 40, "[image]", 1, 1),       # block_type=1 → skip
+            (0, 40, 100, 60, "More text.", 2, 0),    # block_type=0 → include
+        ]
+        doc = MagicMock()
+        doc.__iter__ = MagicMock(return_value=iter([page]))
+        result = du._extract_paragraphs_from_blocks(doc)
+        assert result == ["Text block.", "More text."]
+
+    def test_empty_blocks_return_empty_list(self):
+        page = MagicMock()
+        page.get_text.return_value = []
+        doc = MagicMock()
+        doc.__iter__ = MagicMock(return_value=iter([page]))
+        assert du._extract_paragraphs_from_blocks(doc) == []
+
+    def test_whitespace_normalised(self):
+        doc = self._make_doc_with_blocks(["Line one\nLine two  continued."])
+        result = du._extract_paragraphs_from_blocks(doc)
+        assert result == ["Line one Line two continued."]
+
+
+class TestExtractChunksPdfBlocksPrimary:
+    """Tests that extract_chunks_from_pdf uses blocks as the primary paragraph source."""
+
+    def _blocks_from_texts(self, texts: list) -> list:
+        """Turn a list of strings into fitz-style block tuples."""
+        return [
+            (0, i * 20, 100, (i + 1) * 20, t, i, 0)
+            for i, t in enumerate(texts)
+        ]
+
+    def _make_fitz_with_blocks(self, block_texts: list, plain_text: str = ""):
+        """Return a fake fitz module whose open() yields blocks + plain text."""
+        blocks = self._blocks_from_texts(block_texts)
+        page = MagicMock()
+        # get_text("blocks") → list of block tuples
+        # get_text()         → plain string
+        def get_text(mode=None):
+            if mode == "blocks":
+                return blocks
+            return plain_text or " ".join(block_texts)
+        page.get_text.side_effect = get_text
+
+        doc = MagicMock()
+        doc.__iter__ = MagicMock(side_effect=lambda: iter([page]))
+        doc.close = MagicMock()
+
+        fake_fitz = MagicMock()
+        fake_fitz.open.return_value = doc
+        return fake_fitz
+
+    def _call(self, block_texts, plain_text="", **kwargs):
+        import sys
+        du.reset_chunk_stats()
+        fake_fitz = self._make_fitz_with_blocks(block_texts, plain_text)
+        with patch.dict(sys.modules, {"fitz": fake_fitz}):
+            return du.extract_chunks_from_pdf(
+                Path("fake.pdf"),
+                {"technology": "AI", "year": 2023},
+                **kwargs
+            )
+
+    def test_blocks_primary_used_when_enough_blocks(self):
+        """When blocks give ≥3 substantive paragraphs, blocks_primary stat increments."""
+        paras = [" ".join(["word"] * 60)] * 5
+        self._call(paras)
+        assert du.get_chunk_stats()["documents_blocks_primary"] == 1
+        assert du.get_chunk_stats()["documents_text_newline_primary"] == 0
+
+    def test_text_newline_fallback_when_blocks_too_few(self):
+        """When blocks give <3 substantive paragraphs, text-newline fallback is used."""
+        # Only 1 block (short), but plain_text has clean double-newlines
+        short_block = ["hi"]  # below word floor
+        good_plain = "\n\n".join([" ".join(["word"] * 60)] * 5)
+        self._call(short_block, plain_text=good_plain,
+                   min_chunk_words=40, min_chunk_chars=80)
+        assert du.get_chunk_stats()["documents_text_newline_primary"] == 1
+        assert du.get_chunk_stats()["documents_blocks_primary"] == 0
+
+    def test_blocks_primary_produces_paragraph_method(self):
+        """Chunks from block paragraphs are labelled 'paragraph'."""
+        paras = [" ".join(["word"] * 60)] * 5
+        chunks = self._call(paras)
+        assert all(c["chunking_method"] == "paragraph" for c in chunks)
+
+    def test_pdf_without_double_newlines_recovered_by_blocks(self):
+        """A PDF with no \\n\\n in text but good blocks → uses blocks, not sentence_fallback."""
+        # Simulate a PDF where plain text extraction produces no double-newlines
+        # (would have triggered case-3 in the old chunker) but blocks are good.
+        paras = [" ".join(["word"] * 60)] * 5
+        plain_no_breaks = " ".join(paras)  # no \n\n at all
+        chunks = self._call(paras, plain_text=plain_no_breaks)
+        # Should NOT be sentence_fallback because blocks gave enough paragraphs
+        assert all(c["chunking_method"] != "sentence_fallback" for c in chunks)
+        assert du.get_chunk_stats()["documents_blocks_primary"] == 1
+        assert du.get_chunk_stats()["documents_sentence_fallback"] == 0
+
+    def test_stats_include_new_keys(self):
+        """The chunk stats dict must contain the new paragraph-source keys."""
+        stats = du.get_chunk_stats()
+        assert "documents_blocks_primary" in stats
+        assert "documents_text_newline_primary" in stats
+
+
 class TestChunkingConstants:
     def test_min_chunk_words_is_40(self):
         assert du.MIN_CHUNK_WORDS == 40
@@ -1336,3 +1483,120 @@ class TestChunkingConstants:
 
     def test_sentence_fallback_min_paragraphs_is_3(self):
         assert du.SENTENCE_FALLBACK_MIN_PARAGRAPHS == 3
+
+
+# ===========================================================================
+# load_artifacts()
+# ===========================================================================
+
+class TestLoadArtifacts:
+    """Verify load_artifacts() returns all expected keys with correct types."""
+
+    @pytest.fixture()
+    def artifact_dirs(self, tmp_path):
+        """Create synthetic artifact files that mirror what 01_processing writes."""
+        out  = tmp_path / "outputs"
+        ckpt = tmp_path / "checkpoints"
+        out.mkdir()
+        ckpt.mkdir()
+
+        # --- DataFrames ---
+        pd.DataFrame({"chunk_id": ["c0"], "text": ["hello"], "word_count": [1]}).to_csv(
+            out / "paragraph_chunks.csv", index=False)
+        pd.DataFrame({"concern": ["test"], "chunk_id": ["c0"]}).to_csv(
+            out / "extracted_concerns.csv", index=False)
+        pd.DataFrame({"benefit": ["test"], "chunk_id": ["c0"]}).to_csv(
+            out / "extracted_benefits.csv", index=False)
+        pd.DataFrame({"cluster_id": [0], "label": ["Cluster 0"], "size": [1]}).to_csv(
+            out / "cluster_summary.csv", index=False)
+        pd.DataFrame({"cluster_id": [0], "label": ["Benefit Cluster 0"], "size": [1]}).to_csv(
+            out / "benefit_cluster_summary.csv", index=False)
+
+        # --- Numpy arrays ---
+        np.save(ckpt / "concern_embeddings.npy",       np.zeros((1, 4)))
+        np.save(ckpt / "benefit_embeddings.npy",       np.zeros((1, 4)))
+        np.save(ckpt / "cluster_centroids.npy",        np.zeros((2, 4)))
+        np.save(ckpt / "benefit_cluster_centroids.npy", np.zeros((2, 4)))
+
+        # --- JSON files ---
+        (ckpt / "concern_ids.json").write_text(json.dumps(["id0"]))
+        (ckpt / "benefit_ids.json").write_text(json.dumps(["id0"]))
+        (out  / "cluster_labels.json").write_text(json.dumps({"0": "Label A"}))
+        (out  / "benefit_cluster_labels.json").write_text(json.dumps({"0": "Benefit A"}))
+        (out  / "framing_lens_mappings.json").write_text(
+            json.dumps({"Lens1": {"cluster_ids": [0]}}))
+        (out  / "benefit_framing_lens_mappings.json").write_text(
+            json.dumps({"BenLens1": {"cluster_ids": [0]}}))
+
+        # --- Entropy JSON files (written by add-entropy-saves task) ---
+        (out / "cluster_entropy.json").write_text(json.dumps({
+            "raw":  {"0": 0.8, "1": 0.2},
+            "norm": {"0": 0.6, "1": 0.1},
+            "cross_cutting": [0],
+        }))
+        (out / "benefit_cluster_entropy.json").write_text(json.dumps({
+            "raw":  {"0": 0.7},
+            "norm": {"0": 0.5},
+            "cross_cutting": [0],
+        }))
+
+        return out, ckpt
+
+    def test_all_keys_present(self, artifact_dirs):
+        out, ckpt = artifact_dirs
+        a = du.load_artifacts(out, ckpt)
+        expected_keys = {
+            "chunks_df", "concerns_df", "benefits_df",
+            "cluster_summary_df", "benefit_cluster_summary_df",
+            "concern_embeddings", "benefit_embeddings",
+            "concern_centroids", "benefit_centroids",
+            "concern_ids", "benefit_ids",
+            "cluster_labels", "benefit_cluster_labels",
+            "framing_lens_mappings", "benefit_framing_lens_mappings",
+            "cluster_entropy", "cluster_entropy_norm", "cross_cutting_clusters",
+            "benefit_cluster_entropy", "normalized_entropy_benefits",
+            "cross_cutting_clusters_benefits",
+        }
+        assert expected_keys == set(a.keys())
+
+    def test_dataframes_are_dataframes(self, artifact_dirs):
+        out, ckpt = artifact_dirs
+        a = du.load_artifacts(out, ckpt)
+        for key in ("chunks_df", "concerns_df", "benefits_df",
+                    "cluster_summary_df", "benefit_cluster_summary_df"):
+            assert isinstance(a[key], pd.DataFrame), f"{key} should be a DataFrame"
+
+    def test_numpy_arrays_correct_shape(self, artifact_dirs):
+        out, ckpt = artifact_dirs
+        a = du.load_artifacts(out, ckpt)
+        assert isinstance(a["concern_embeddings"], np.ndarray)
+        assert a["concern_embeddings"].shape == (1, 4)
+        assert a["concern_centroids"].shape == (2, 4)
+
+    def test_entropy_dicts_have_int_keys(self, artifact_dirs):
+        out, ckpt = artifact_dirs
+        a = du.load_artifacts(out, ckpt)
+        for key in ("cluster_entropy", "cluster_entropy_norm",
+                    "benefit_cluster_entropy", "normalized_entropy_benefits"):
+            assert all(isinstance(k, int) for k in a[key]), \
+                f"{key} keys should be int"
+
+    def test_cross_cutting_clusters_is_list(self, artifact_dirs):
+        out, ckpt = artifact_dirs
+        a = du.load_artifacts(out, ckpt)
+        assert isinstance(a["cross_cutting_clusters"], list)
+        assert isinstance(a["cross_cutting_clusters_benefits"], list)
+        assert a["cross_cutting_clusters"] == [0]
+
+    def test_entropy_values_correct(self, artifact_dirs):
+        out, ckpt = artifact_dirs
+        a = du.load_artifacts(out, ckpt)
+        assert a["cluster_entropy"][0] == pytest.approx(0.8)
+        assert a["cluster_entropy_norm"][1] == pytest.approx(0.1)
+
+    def test_missing_file_raises(self, tmp_path):
+        out  = tmp_path / "out"
+        ckpt = tmp_path / "ckpt"
+        out.mkdir(); ckpt.mkdir()
+        with pytest.raises((FileNotFoundError, OSError)):
+            du.load_artifacts(out, ckpt)
