@@ -61,3 +61,8 @@ tenets/combine_tenets.py
 # VibeSafe documentation (system files)
 docs/whats_next_script.md
 docs/yaml_frontmatter_examples.md
+
+# BEGIN fynesse
+# Machine-specific Fynesse config — managed by install.sh, do not commit.
+fynesse/machine.yml
+# END fynesse

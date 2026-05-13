@@ -1,0 +1,11 @@
+# Default configuration for this Fynesse project.
+# Values here are shared by all users and committed to the repository.
+#
+# For local overrides (credentials, local paths), create fynesse/machine.yml
+# which is gitignored and should never be committed.
+#
+# For project-level overrides, use _config.yml in the repository root.
+
+# Replace with your project's default data URL or other shared settings.
+# Example:
+# data_url: https://raw.githubusercontent.com/your-org/your-data/main/dataset.csv
