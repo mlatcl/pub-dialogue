@@ -5,7 +5,7 @@ id: "000A"
 last_updated: "2026-05-13"
 closed: "2026-05-13"
 status: "Closed"
-compressed: false
+compressed: true
 related_requirements: []
 related_cips: ["0003"]
 tags:

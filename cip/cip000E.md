@@ -5,7 +5,7 @@ id: "000E"
 last_updated: "2026-05-13"
 implemented: "2026-05-13"
 status: "Closed"
-compressed: false
+compressed: true
 related_requirements: []
 related_cips: ["000C", "000D"]
 tags:

@@ -9,7 +9,7 @@ tags:
   - packaging
   - dialogue-utils
   - reproducibility
-compressed: false
+compressed: true
 ---
 
 # CIP-000B: Package pub_dialogue — installable package replacing dialogue_utils.py
