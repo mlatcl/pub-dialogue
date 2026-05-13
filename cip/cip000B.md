@@ -2,7 +2,7 @@
 author: "neil"
 created: "2026-05-12"
 last_updated: "2026-05-12"
-status: "Proposed"
+status: "Closed"
 related_requirements: []
 related_cips: ["0003", "000A"]
 tags:
@@ -18,9 +18,9 @@ compressed: false
 
 - [x] Proposed - Initial idea documented
 - [x] Accepted - Approved, ready to start work
-- [ ] In Progress - Implementation underway
-- [ ] Implemented - Code changes complete
-- [ ] Closed - Implementation reviewed and merged
+- [x] In Progress - Implementation underway
+- [x] Implemented - Code changes complete
+- [x] Closed - Implementation reviewed and merged
 
 ## Summary
 
@@ -170,13 +170,13 @@ so notebooks can be migrated incrementally.
 
 ## Implementation Status
 
-- [ ] Create pub_dialogue/ package directory
-- [ ] Create pyproject.toml
-- [ ] Replace dialogue_utils.py with backward-compat shim
-- [ ] Update test imports
-- [ ] Update notebook install cells
-- [ ] Update notebook import lines
-- [ ] Verify pip install -e . and tests pass
+- [x] Create pub_dialogue/ package directory
+- [x] Create pyproject.toml
+- [x] Replace dialogue_utils.py with backward-compat shim
+- [x] Update test imports
+- [x] Update notebook install cells
+- [x] Update notebook import lines
+- [x] Verify pip install -e . and tests pass
 
 ## References
 

@@ -3,7 +3,7 @@ author: "Neil Lawrence"
 created: "2026-05-13"
 id: "000F"
 last_updated: "2026-05-13"
-status: "Proposed"
+status: "Closed"
 compressed: false
 related_requirements: []
 related_cips: []
@@ -23,7 +23,7 @@ title: "Refactor Notebook Imports to Lazy, Co-located Style"
 - [x] Accepted - Approved, ready to start work
 - [x] In Progress - Actively being implemented
 - [x] Implemented - Work complete, awaiting verification
-- [ ] Closed - Verified and complete
+- [x] Closed - Verified and complete
 - [ ] Rejected - Will not be implemented (add reason, use superseded_by if replaced)
 - [ ] Deferred - Postponed (use blocked_by field to indicate blocker)
 
