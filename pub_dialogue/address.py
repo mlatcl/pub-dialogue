@@ -23,6 +23,13 @@ Public API:
     _volume_table, _top_clusters
   Export helpers:
     _clean_for_xlsx
+  Extraction-cache validation:
+    validate_extraction_cache
+    write_extraction_diagnostics
+  Temporal diversity metric:
+    entropy_by_year
+  Validation summary:
+    generate_validation_summary
 
 Constants:
   CROSSCUTTING_ENTROPY_THRESHOLD
@@ -885,3 +892,272 @@ def _clean_for_xlsx(v: Any) -> Any:
     if isinstance(v, str):
         return _ILLEGAL_XLSX_CHARS.sub("", v)
     return v
+
+
+# ---------------------------------------------------------------------------
+# Extraction-cache validation
+# ---------------------------------------------------------------------------
+
+def validate_extraction_cache(
+    cache: Dict[str, Any],
+    kind: str,
+    warn_threshold: float = 0.30,
+) -> bool:
+    """Check a loaded extraction cache for signs of a partial-failure run.
+
+    Parameters
+    ----------
+    cache:
+        Mapping of ``chunk_id → list[phrase]`` as loaded from JSON.
+    kind:
+        ``'concern'`` or ``'benefit'``, used only in warning messages.
+    warn_threshold:
+        If the fraction of empty entries exceeds this value, print a warning
+        and return ``False``.  Default 0.30 (30%).
+
+    Returns
+    -------
+    bool
+        ``True`` if the cache looks complete, ``False`` if suspiciously many
+        entries are empty (possibly masked API errors).
+    """
+    if not cache:
+        return False
+    n_empty = sum(1 for v in cache.values() if not v)
+    frac_empty = n_empty / len(cache)
+    if frac_empty > warn_threshold:
+        print(
+            f"[WARN] {kind} cache: {n_empty}/{len(cache)} entries "
+            f"({frac_empty:.0%}) are empty lists."
+        )
+        print(
+            "[WARN] This may indicate a partial-failure run where API errors "
+            "were cached as empty. Consider deleting the cache file and "
+            "re-running extraction."
+        )
+        return False
+    return True
+
+
+def write_extraction_diagnostics(
+    results: list,
+    kind: str,
+    output_folder: Path,
+) -> None:
+    """Write yield-diagnostic files after an extraction pass.
+
+    Produces three files in *output_folder*:
+
+    * ``extraction_yield_summary.csv`` — one row per (kind, run) with counts
+      of sentinels, filter drops, errors, and retained phrases.
+    * ``tech_filter_drops_{kind}.csv`` — one row per dropped phrase with the
+      matching tech-word substring.
+    * ``extraction_errors_{kind}.csv`` — one row per chunk that raised an
+      exception during the API call.
+
+    Parameters
+    ----------
+    results:
+        List of :class:`ExtractionResult` objects.
+    kind:
+        ``"concern"`` or ``"benefit"``.
+    output_folder:
+        Directory where output files are written.
+    """
+    output_folder = Path(output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
+
+    sentinel_chunks = sum(1 for r in results if r.sentinel_returned)
+    error_chunks = sum(1 for r in results if r.error is not None)
+    filter_drop_chunks = sum(1 for r in results if r.dropped_by_filter)
+    filter_drops_total = sum(len(r.dropped_by_filter) for r in results)
+    retained_total = sum(len(r.retained_phrases) for r in results)
+    total_chunks = len(results)
+
+    summary_path = output_folder / "extraction_yield_summary.csv"
+    summary_row = {
+        "track": kind,
+        "total_chunks": total_chunks,
+        "sentinel_empties": sentinel_chunks,
+        "filter_drops_chunks": filter_drop_chunks,
+        "filter_drops_total": filter_drops_total,
+        "error_chunks": error_chunks,
+        "retained_phrases": retained_total,
+    }
+    summary_df = pd.DataFrame([summary_row])
+    if summary_path.exists():
+        existing = pd.read_csv(summary_path)
+        existing = existing[existing["track"] != kind]
+        summary_df = pd.concat([existing, summary_df], ignore_index=True)
+    summary_df.to_csv(summary_path, index=False)
+
+    drop_rows = []
+    for r in results:
+        for phrase, matched_word in r.dropped_by_filter:
+            drop_rows.append({
+                "chunk_id": r.chunk_id,
+                "dropped_phrase": phrase,
+                "matching_tech_word": matched_word,
+            })
+    pd.DataFrame(drop_rows).to_csv(
+        output_folder / f"tech_filter_drops_{kind}.csv", index=False
+    )
+
+    error_rows = [
+        {"chunk_id": r.chunk_id, "track": kind, "error": r.error}
+        for r in results
+        if r.error is not None
+    ]
+    pd.DataFrame(error_rows, columns=["chunk_id", "track", "error"]).to_csv(
+        output_folder / f"extraction_errors_{kind}.csv", index=False
+    )
+
+    print(
+        f"\n[{kind}] Extraction diagnostics written to {output_folder}:\n"
+        f"  total_chunks      : {total_chunks}\n"
+        f"  retained_phrases  : {retained_total}\n"
+        f"  sentinel_empties  : {sentinel_chunks}\n"
+        f"  filter_drop_chunks: {filter_drop_chunks} ({filter_drops_total} phrases)\n"
+        f"  error_chunks      : {error_chunks}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Temporal diversity metric
+# ---------------------------------------------------------------------------
+
+def entropy_by_year(g: pd.DataFrame, cluster_col: str = "cluster_id") -> float:
+    """Normalised entropy of cluster distribution within a year-group.
+
+    Operates on address-stage outputs (clusters are produced by k-means on
+    extracted phrase embeddings).  Intended for use with
+    ``groupby(...).apply(entropy_by_year)``.
+    """
+    from pub_dialogue.utils import normalized_entropy  # avoid circular import
+    p = g[cluster_col].value_counts(normalize=True).values
+    return normalized_entropy(p)
+
+
+# ---------------------------------------------------------------------------
+# Validation summary
+# ---------------------------------------------------------------------------
+
+def generate_validation_summary(
+    output_folder: Path,
+    n_concern_clusters: Optional[int] = None,
+    n_benefit_clusters: Optional[int] = None,
+) -> Path:
+    """Write a plain-text validation summary for Activity 4 of the playbook.
+
+    Reads the diagnostic CSVs produced by earlier pipeline stages and writes
+    ``validation_summary.txt`` to *output_folder*.
+
+    Parameters
+    ----------
+    output_folder:
+        Directory containing pipeline output CSVs.
+    n_concern_clusters:
+        Expected number of concern clusters (``N_CONCERN_CLUSTERS``).
+    n_benefit_clusters:
+        Expected number of benefit clusters (``N_BENEFIT_CLUSTERS``).
+
+    Returns
+    -------
+    Path
+        Path to the written ``validation_summary.txt``.
+    """
+    output_folder = Path(output_folder)
+    lines: List[str] = [
+        "Public Dialogue Analyser — Validation Summary",
+        "=" * 48,
+        "",
+    ]
+
+    def _count(csv_name: str) -> int:
+        p = output_folder / csv_name
+        if not p.exists():
+            return -1
+        try:
+            return len(pd.read_csv(p))
+        except Exception:
+            return -1
+
+    def _yield_row(kind: str) -> Optional[dict]:
+        p = output_folder / "extraction_yield_summary.csv"
+        if not p.exists():
+            return None
+        try:
+            df = pd.read_csv(p)
+            row = df[df["track"] == kind]
+            return row.iloc[0].to_dict() if not row.empty else None
+        except Exception:
+            return None
+
+    n_chunks = _count("paragraph_chunks.csv")
+    lines += [
+        f"Paragraphs (chunks): {n_chunks if n_chunks >= 0 else 'FILE NOT FOUND'}",
+        "",
+    ]
+
+    concern_yield = _yield_row("concern")
+    n_concern_phrases = _count("extracted_concerns.csv")
+    lines.append("CONCERNS")
+    lines.append("-" * 24)
+    if concern_yield:
+        lines += [
+            f"  Total chunks processed : {int(concern_yield['total_chunks'])}",
+            f"  Retained phrases       : {int(concern_yield['retained_phrases'])}",
+            f"  Sentinel (no concern)  : {int(concern_yield['sentinel_empties'])}",
+            f"  Filter drops (chunks)  : {int(concern_yield['filter_drops_chunks'])} "
+            f"({int(concern_yield['filter_drops_total'])} phrases)",
+            f"  API errors             : {int(concern_yield['error_chunks'])}",
+        ]
+    lines.append(
+        f"  extracted_concerns.csv : {n_concern_phrases if n_concern_phrases >= 0 else 'FILE NOT FOUND'} rows"
+    )
+    if n_concern_clusters is not None:
+        n_actual = _count("cluster_summary.csv")
+        match = "OK" if n_actual == n_concern_clusters else f"MISMATCH (expected {n_concern_clusters})"
+        lines.append(f"  Concern clusters       : {n_actual} [{match}]")
+    lines.append("")
+
+    benefit_yield = _yield_row("benefit")
+    n_benefit_phrases = _count("extracted_benefits.csv")
+    lines.append("BENEFITS")
+    lines.append("-" * 24)
+    if benefit_yield:
+        lines += [
+            f"  Total chunks processed : {int(benefit_yield['total_chunks'])}",
+            f"  Retained phrases       : {int(benefit_yield['retained_phrases'])}",
+            f"  Sentinel (no benefit)  : {int(benefit_yield['sentinel_empties'])}",
+            f"  Filter drops (chunks)  : {int(benefit_yield['filter_drops_chunks'])} "
+            f"({int(benefit_yield['filter_drops_total'])} phrases)",
+            f"  API errors             : {int(benefit_yield['error_chunks'])}",
+        ]
+    lines.append(
+        f"  extracted_benefits.csv : {n_benefit_phrases if n_benefit_phrases >= 0 else 'FILE NOT FOUND'} rows"
+    )
+    lines.append("")
+
+    lines += ["FILE CHECKLIST", "-" * 24]
+    expected_files = [
+        "paragraph_chunks.csv",
+        "extracted_concerns.csv",
+        "extracted_benefits.csv",
+        "cluster_summary.csv",
+        "cluster_exemplars.json",
+        "cluster_labels.json",
+        "traceability_paragraphs.csv",
+        "evidence_pack_paragraphs.html",
+        "extraction_yield_summary.csv",
+    ]
+    for fname in expected_files:
+        present = (output_folder / fname).exists()
+        lines.append(f"  {'[OK]' if present else '[MISSING]':10s} {fname}")
+
+    lines += ["", "Generated by pub_dialogue.address.generate_validation_summary()"]
+
+    out_path = output_folder / "validation_summary.txt"
+    out_path.write_text("\n".join(lines))
+    print(f"Validation summary written to {out_path}")
+    return out_path

@@ -66,11 +66,14 @@ from pub_dialogue.assess import (  # noqa: F401
     PRIVACY_TERMS,
     _PRIVACY_PATTERN,
     is_privacy_text,
+    filter_missing_source_text,
+    vocabulary_frequency_diagnostic,
+)
+
+from pub_dialogue.address import (  # noqa: F401 — moved from assess (address-stage outputs)
     entropy_by_year,
     validate_extraction_cache,
     write_extraction_diagnostics,
-    filter_missing_source_text,
-    vocabulary_frequency_diagnostic,
     generate_validation_summary,
 )
 

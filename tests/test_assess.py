@@ -1,10 +1,11 @@
 """
 tests/test_assess.py — tests for pub_dialogue.assess module.
 
-Covers heuristic flags, plot_data_quality, flag_chunk_quality, entropy_by_year,
-vocabulary_frequency_diagnostic, and generate_validation_summary.  Functions
-duplicated in test_dialogue_utils (validate_extraction_cache,
-write_extraction_diagnostics, etc.) are not repeated here.
+Covers heuristic flags, plot_data_quality, flag_chunk_quality,
+vocabulary_frequency_diagnostic, and assess-only utilities.
+
+entropy_by_year and validate_extraction_cache are now in pub_dialogue.address
+(address-stage outputs) and are tested via test_address.py.
 """
 
 from pathlib import Path
@@ -15,6 +16,7 @@ import pandas as pd
 import pytest
 
 import pub_dialogue.assess as assess
+import pub_dialogue.address as address
 
 
 # ---------------------------------------------------------------------------
@@ -141,22 +143,22 @@ class TestEntropyByYear:
 
     def test_uniform_distribution_high_entropy(self):
         g = self._make_group([0, 1, 2, 3] * 5)
-        e = assess.entropy_by_year(g)
+        e = address.entropy_by_year(g)
         assert e > 0.5
 
     def test_concentrated_distribution_zero_entropy(self):
         g = self._make_group([0] * 20)
-        e = assess.entropy_by_year(g)
+        e = address.entropy_by_year(g)
         assert e == 0.0
 
     def test_empty_group_returns_zero(self):
         g = self._make_group([])
-        e = assess.entropy_by_year(g)
+        e = address.entropy_by_year(g)
         assert e == 0.0
 
     def test_returns_float(self):
         g = self._make_group([0, 1, 2])
-        assert isinstance(assess.entropy_by_year(g), float)
+        assert isinstance(address.entropy_by_year(g), float)
 
 
 # ===========================================================================
@@ -210,14 +212,14 @@ class TestVocabularyFrequencyDiagnostic:
 
 
 # ===========================================================================
-# validate_extraction_cache
+# validate_extraction_cache (moved to address; tested here via address module)
 # ===========================================================================
 
 class TestValidateExtractionCacheAssess:
     def test_valid_cache_with_few_empties(self):
         cache = {"c0": ["job loss"], "c1": ["privacy"], "c2": ["job loss"]}
-        assert assess.validate_extraction_cache(cache, "concern")
+        assert address.validate_extraction_cache(cache, "concern")
 
     def test_mostly_empty_cache_returns_false(self):
         cache = {f"c{i}": [] for i in range(10)}
-        assert not assess.validate_extraction_cache(cache, "concern", warn_threshold=0.0)
+        assert not address.validate_extraction_cache(cache, "concern", warn_threshold=0.0)
