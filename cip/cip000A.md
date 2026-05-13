@@ -3,7 +3,7 @@ author: "Neil Lawrence"
 created: "2026-05-12"
 id: "000A"
 last_updated: "2026-05-13"
-status: "Proposed"
+status: "In Progress"
 compressed: false
 related_requirements: []
 related_cips: ["0003"]
@@ -22,7 +22,7 @@ title: "Split monolithic v19 notebook into thematic analysis notebooks"
 
 - [x] Proposed - Initial idea documented
 - [x] Accepted - Approved, ready to start work
-- [ ] In Progress - Actively being implemented
+- [x] In Progress - Actively being implemented
 - [ ] Implemented - Work complete, awaiting verification
 - [ ] Closed - Verified and complete
 - [ ] Rejected - Will not be implemented
@@ -247,9 +247,9 @@ this CIP is itself the design record.
 - [ ] Add `load_artifacts()` to `dialogue_utils.py` + tests
 - [ ] Add entropy saves to v19 cells 20 and 58
 - [ ] Fix Figure 4 filename (cell 99)
-- [ ] Move `validate_extraction_cache`, `write_extraction_diagnostics`, `entropy_by_year`, `generate_validation_summary` from `assess.py` to `address.py`
-- [ ] Remove API setup and address-phase constants from `00_data_quality.ipynb`
-- [ ] Consolidate chunk quality diagnostics; add Access→Address boundary marker in `01_processing.ipynb`
+- [x] Move `validate_extraction_cache`, `write_extraction_diagnostics`, `entropy_by_year`, `generate_validation_summary` from `assess.py` to `address.py`
+- [x] Remove API setup and address-phase constants from `00_data_quality.ipynb`
+- [x] Consolidate chunk quality diagnostics; add Access→Address boundary marker in `01_processing.ipynb`
 - [ ] Write `scripts/split_notebook.py`
 - [ ] Run split script → produce 6 notebooks
 - [ ] Add manifest cell to `01_processing.ipynb`
