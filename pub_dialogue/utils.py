@@ -96,6 +96,27 @@ from pub_dialogue.address import (  # noqa: F401
 )
 
 # ---------------------------------------------------------------------------
+# Safe CSV reader
+# ---------------------------------------------------------------------------
+
+def read_csv_safe(path, **kwargs) -> "pd.DataFrame":
+    """Read a CSV that may be empty or missing without raising EmptyDataError.
+
+    Returns an empty DataFrame (with no columns) when the file does not exist,
+    has zero bytes, or contains only whitespace — the three cases that cause
+    ``pd.read_csv`` to raise ``EmptyDataError``.
+    """
+    from pathlib import Path
+    p = Path(path)
+    if not p.exists() or p.stat().st_size == 0:
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(p, **kwargs)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
+
+
+# ---------------------------------------------------------------------------
 # Display helpers (stay in utils — used by all three stages)
 # ---------------------------------------------------------------------------
 

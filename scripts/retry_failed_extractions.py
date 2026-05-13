@@ -77,14 +77,8 @@ def _load_env() -> None:
 def _failed_ids(kind: str) -> set[str]:
     """Return chunk IDs that errored on the previous run."""
     err_path = OUTPUTS / f"extraction_errors_{kind}.csv"
-    if not err_path.exists() or err_path.stat().st_size == 0:
-        logger.info("No error CSV found at %s — nothing to retry.", err_path)
-        return set()
-    try:
-        df = pd.read_csv(err_path)
-    except pd.errors.EmptyDataError:
-        logger.info("Error CSV at %s is empty — nothing to retry.", err_path)
-        return set()
+    from pub_dialogue.utils import read_csv_safe
+    df = read_csv_safe(err_path)
     if df.empty:
         logger.info("No failures recorded in %s.", err_path.name)
         return set()
