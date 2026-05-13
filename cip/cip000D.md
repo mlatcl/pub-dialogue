@@ -3,7 +3,7 @@ author: "Neil Lawrence"
 created: "2026-05-12"
 id: "000D"
 last_updated: "2026-05-12"
-status: "Implemented"
+status: "Closed"
 compressed: false
 related_requirements: ["0006"]
 related_cips: ["000A", "000B", "000C"]
@@ -24,7 +24,7 @@ title: "Restructure pub_dialogue package into access/assess/address modules"
 - [x] Accepted - Approved, ready to start work
 - [x] In Progress - Actively being implemented
 - [x] Implemented - Work complete, awaiting verification
-- [ ] Closed - Verified and complete
+- [x] Closed - Verified and complete
 - [ ] Rejected - Will not be implemented
 - [ ] Deferred - Postponed
 
@@ -237,14 +237,14 @@ This CIP implements REQ-0006 by creating `assess.py` as a module with no LLM dep
 
 ## Implementation Status
 
-- [ ] Create `pub_dialogue/access.py` and migrate chunking functions
-- [ ] Create `pub_dialogue/assess.py` and migrate quality heuristics / diagnostic plot function
-- [ ] Create `pub_dialogue/address.py` and migrate extraction, embedding, and clustering helpers
-- [ ] Update `pub_dialogue/utils.py` with re-export blocks
-- [ ] Update `pub_dialogue/__init__.py`
-- [ ] Update notebooks to use module imports
-- [ ] Add `tests/test_access.py`, `tests/test_assess.py`, `tests/test_address.py`
-- [ ] Run full test suite
+- [x] Create `pub_dialogue/access.py` and migrate chunking functions
+- [x] Create `pub_dialogue/assess.py` and migrate quality heuristics / diagnostic plot function
+- [x] Create `pub_dialogue/address.py` and migrate extraction, embedding, and clustering helpers
+- [x] Update `pub_dialogue/utils.py` with re-export blocks
+- [x] Update `pub_dialogue/__init__.py`
+- [x] Update notebooks to use module imports
+- [x] Add `tests/test_access.py`, `tests/test_assess.py`, `tests/test_address.py`
+- [x] Run full test suite
 
 ## References
 

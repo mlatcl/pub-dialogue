@@ -4,7 +4,7 @@ created: "2026-05-13"
 id: "000E"
 last_updated: "2026-05-13"
 implemented: "2026-05-13"
-status: "Implemented"
+status: "Closed"
 compressed: false
 related_requirements: []
 related_cips: ["000C", "000D"]
@@ -25,7 +25,7 @@ title: "Extraction Robustness: Retry, Logging, and Test Mode"
 - [x] Accepted - Approved, ready to start work
 - [x] In Progress - Actively being implemented
 - [x] Implemented - Work complete, awaiting verification
-- [ ] Closed - Verified and complete
+- [x] Closed - Verified and complete
 - [ ] Rejected
 - [ ] Deferred
 
@@ -156,7 +156,7 @@ None yet assigned.
 - [x] Add `_complete_with_retry()` to `pub_dialogue/address.py`
 - [x] Update `extract_phrases()` to use retry helper (with `max_retries=5` default)
 - [x] Add structured logging to `pub_dialogue/address.py` (`pub_dialogue.address` logger)
-- [ ] Add `TEST_MODE` constants and filter to `01_processing.ipynb`
+- [ ] Add `TEST_MODE` constants and filter to `01_processing.ipynb` (deferred → backlog: 2026-05-13_extraction-test-mode)
 - [x] Add partial-cache re-run logic to extraction cell (re-runs chunks in errors CSV)
 - [x] Write unit tests for retry (`TestCompleteWithRetry`, `TestExtractPhrasesRetry` — 6 tests, all pass)
 - [x] Reduce `max_workers` from 10 to 5 and suppress LiteLLM noise in extraction cells
