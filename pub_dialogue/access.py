@@ -7,6 +7,8 @@ downstream analysis notebooks.  It has no dependency on the research question an
 no LLM calls.
 
 Public API:
+  Stage class (CIP-0010):
+    AccessStage — typed config dataclass; use AccessStage() in notebook setup cells
   Chunking:
     extract_chunks_from_pdf
     reset_chunk_stats, get_chunk_stats
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +43,37 @@ MIN_CHUNK_CHARS: int = 80
 MAX_CHUNK_WORDS: int = 500
 SENTENCE_FALLBACK_TARGET_WORDS: int = 300
 SENTENCE_FALLBACK_MIN_PARAGRAPHS: int = 3
+
+# ---------------------------------------------------------------------------
+# AccessStage — typed config dataclass (CIP-0010 Phase 1)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AccessStage:
+    """Configuration and entry-point for the Access pipeline stage.
+
+    Centralises all path and chunking constants that were previously repeated
+    in every notebook setup cell.  All existing module-level functions remain
+    unchanged; this class delegates to them.
+
+    Usage in notebook setup cells::
+
+        from pub_dialogue.access import AccessStage
+        access = AccessStage()          # use defaults
+        a = access.load_artifacts()     # load pre-computed outputs
+    """
+
+    output_folder: Path = field(default_factory=lambda: Path("outputs"))
+    checkpoint_folder: Path = field(default_factory=lambda: Path("checkpoints"))
+    pdf_folder: Path = field(default_factory=lambda: Path("pdfs"))
+    min_chunk_words: int = MIN_CHUNK_WORDS
+    max_chunk_words: int = MAX_CHUNK_WORDS
+    min_chunk_chars: int = MIN_CHUNK_CHARS
+
+    def load_artifacts(self) -> dict:
+        """Load pre-computed artefacts from output_folder and checkpoint_folder."""
+        return load_artifacts(self.output_folder, self.checkpoint_folder)
+
 
 # ---------------------------------------------------------------------------
 # Chunk statistics accumulator

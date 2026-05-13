@@ -6,6 +6,8 @@ phrase extraction, embedding generation, clustering, labelling, and downstream a
 All functions here operate on the outputs of the access and assess stages.
 
 Public API:
+  Stage class (CIP-0010):
+    AddressStage — typed config dataclass centralising all analysis constants
   Extraction:
     ExtractionResult (dataclass)
     extract_phrases
@@ -48,7 +50,10 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pub_dialogue.access import AccessStage
 
 import numpy as np
 import pandas as pd
@@ -117,6 +122,37 @@ def configure_rate_limiter(calls_per_minute: int = 450) -> None:
 # ---------------------------------------------------------------------------
 
 CROSSCUTTING_ENTROPY_THRESHOLD: float = 0.5
+
+# ---------------------------------------------------------------------------
+# AddressStage — typed config dataclass (CIP-0010 Phase 1)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AddressStage:
+    """Configuration dataclass for the Address pipeline stage.
+
+    Centralises all analysis constants that were previously hard-coded across
+    every analysis notebook.  All existing module-level functions remain
+    unchanged; this class provides a single place to inspect or override
+    configuration.
+
+    Usage in notebook setup cells::
+
+        from pub_dialogue.access import AccessStage
+        from pub_dialogue.address import AddressStage
+        access  = AccessStage()
+        address = AddressStage(access=access)
+    """
+
+    access: "AccessStage"
+    n_concern_clusters: int = 75
+    n_benefit_clusters: int = 75
+    random_seed: int = 42
+    tech_col: str = "technology_meta"
+    ai_tech_label: str = "AI"
+    cross_cutting_threshold: float = CROSSCUTTING_ENTROPY_THRESHOLD
+    soft_membership_threshold: float = 0.3
+    validation_sample_n: int = 250
 
 DEFAULT_TECH_WORDS: List[str] = [
     "ai", "artificial intelligence", "nuclear", "genetic", "nano",

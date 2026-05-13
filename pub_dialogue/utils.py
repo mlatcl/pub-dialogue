@@ -44,6 +44,7 @@ from pub_dialogue.access import (  # noqa: F401
     MAX_CHUNK_WORDS,
     SENTENCE_FALLBACK_TARGET_WORDS,
     SENTENCE_FALLBACK_MIN_PARAGRAPHS,
+    AccessStage,
     _chunk_stats,
     reset_chunk_stats,
     get_chunk_stats,
@@ -65,6 +66,7 @@ from pub_dialogue.assess import (  # noqa: F401
     META_VOCABULARY,
     PRIVACY_TERMS,
     _PRIVACY_PATTERN,
+    AssessStage,
     is_privacy_text,
     filter_missing_source_text,
     vocabulary_frequency_diagnostic,
@@ -83,6 +85,7 @@ from pub_dialogue.address import (  # noqa: F401 — moved from assess (address-
 
 from pub_dialogue.address import (  # noqa: F401
     CROSSCUTTING_ENTROPY_THRESHOLD,
+    AddressStage,
     EXTRACTION_PROMPT,
     BENEFIT_EXTRACTION_PROMPT,
     DEFAULT_TECH_WORDS,

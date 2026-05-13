@@ -10,6 +10,8 @@ question — i.e. without invoking any LLM extraction prompt, without filtering 
 technology-term lists, and without inspecting extracted phrases.
 
 Public API:
+  Stage class (CIP-0010):
+    AssessStage — typed config dataclass holding an AccessStage reference
   Data quality plots:
     plot_data_quality
   Chunk content quality:
@@ -30,11 +32,38 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pub_dialogue.access import AccessStage
 
 import numpy as np
 import pandas as pd
+
+# ---------------------------------------------------------------------------
+# AssessStage — typed config dataclass (CIP-0010 Phase 1)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AssessStage:
+    """Configuration and entry-point for the Assess pipeline stage.
+
+    Holds a reference to the AccessStage so assess-phase helpers can read
+    folder paths without repeating them.  All existing module-level functions
+    remain unchanged.
+
+    Usage in notebook setup cells::
+
+        from pub_dialogue.access import AccessStage
+        from pub_dialogue.assess import AssessStage
+        access = AccessStage()
+        assess = AssessStage(access=access)
+    """
+
+    access: "AccessStage"
+
 
 # ---------------------------------------------------------------------------
 # Constants

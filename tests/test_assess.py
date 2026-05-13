@@ -41,6 +41,29 @@ def _make_chunks_df(n=20, seed=0):
 # Content-quality heuristics
 # ===========================================================================
 
+# ===========================================================================
+# AssessStage dataclass (CIP-0010 Phase 1)
+# ===========================================================================
+
+class TestAssessStageDefaults:
+    """Verify AssessStage can be instantiated and holds an AccessStage reference."""
+
+    def test_instantiation(self):
+        from pub_dialogue.access import AccessStage
+        from pub_dialogue.assess import AssessStage
+        a = AccessStage()
+        stage = AssessStage(access=a)
+        assert stage.access is a
+
+    def test_access_folder_accessible_via_stage(self):
+        from pathlib import Path
+        from pub_dialogue.access import AccessStage
+        from pub_dialogue.assess import AssessStage
+        a = AccessStage(output_folder=Path("custom"))
+        stage = AssessStage(access=a)
+        assert stage.access.output_folder == Path("custom")
+
+
 class TestLooksLikeBibliography:
     def test_doi_plus_year_flagged(self):
         text = "Smith et al. doi:10.1000/xyz (2020)"

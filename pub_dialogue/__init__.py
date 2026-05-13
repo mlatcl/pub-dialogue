@@ -34,6 +34,10 @@ from pub_dialogue.client import LLMClient  # noqa: F401
 # Convenience re-exports of the most-used names (all sourced via utils for
 # backward compatibility; utils itself re-exports from the stage modules)
 from pub_dialogue.utils import (  # noqa: F401
+    # Stage classes (CIP-0010)
+    AccessStage,
+    AssessStage,
+    AddressStage,
     # Display
     show_status,
     show_complete,

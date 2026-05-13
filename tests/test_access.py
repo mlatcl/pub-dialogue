@@ -121,6 +121,53 @@ class TestRepackSentences:
 # load_artifacts (basic smoke test — detailed tests in test_dialogue_utils)
 # ===========================================================================
 
+# ===========================================================================
+# AccessStage dataclass (CIP-0010 Phase 1)
+# ===========================================================================
+
+class TestAccessStageDefaults:
+    """Verify AccessStage defaults match the constants used across notebooks."""
+
+    def test_output_folder_default(self):
+        stage = access.AccessStage()
+        assert stage.output_folder == Path("outputs")
+
+    def test_checkpoint_folder_default(self):
+        stage = access.AccessStage()
+        assert stage.checkpoint_folder == Path("checkpoints")
+
+    def test_pdf_folder_default(self):
+        stage = access.AccessStage()
+        assert stage.pdf_folder == Path("pdfs")
+
+    def test_min_chunk_words_matches_module_constant(self):
+        stage = access.AccessStage()
+        assert stage.min_chunk_words == access.MIN_CHUNK_WORDS
+
+    def test_max_chunk_words_matches_module_constant(self):
+        stage = access.AccessStage()
+        assert stage.max_chunk_words == access.MAX_CHUNK_WORDS
+
+    def test_min_chunk_chars_matches_module_constant(self):
+        stage = access.AccessStage()
+        assert stage.min_chunk_chars == access.MIN_CHUNK_CHARS
+
+    def test_fields_are_overridable(self):
+        stage = access.AccessStage(output_folder=Path("custom_out"))
+        assert stage.output_folder == Path("custom_out")
+
+    def test_load_artifacts_delegates(self, tmp_path):
+        stage = access.AccessStage(
+            output_folder=tmp_path, checkpoint_folder=tmp_path
+        )
+        with pytest.raises((FileNotFoundError, Exception)):
+            stage.load_artifacts()
+
+
+# ===========================================================================
+# load_artifacts (basic smoke test — detailed tests in test_dialogue_utils)
+# ===========================================================================
+
 class TestLoadArtifactsSmoke:
     def test_load_artifacts_raises_on_missing_files(self, tmp_path):
         with pytest.raises((FileNotFoundError, Exception)):

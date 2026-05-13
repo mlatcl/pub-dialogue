@@ -20,6 +20,59 @@ import pub_dialogue.address as address
 # Constants
 # ===========================================================================
 
+# ===========================================================================
+# AddressStage dataclass (CIP-0010 Phase 1)
+# ===========================================================================
+
+class TestAddressStageDefaults:
+    """Verify AddressStage defaults match the constants hardcoded in notebooks."""
+
+    def test_n_concern_clusters(self):
+        from pub_dialogue.access import AccessStage
+        stage = address.AddressStage(access=AccessStage())
+        assert stage.n_concern_clusters == 75
+
+    def test_n_benefit_clusters(self):
+        from pub_dialogue.access import AccessStage
+        stage = address.AddressStage(access=AccessStage())
+        assert stage.n_benefit_clusters == 75
+
+    def test_random_seed(self):
+        from pub_dialogue.access import AccessStage
+        stage = address.AddressStage(access=AccessStage())
+        assert stage.random_seed == 42
+
+    def test_tech_col(self):
+        from pub_dialogue.access import AccessStage
+        stage = address.AddressStage(access=AccessStage())
+        assert stage.tech_col == "technology_meta"
+
+    def test_ai_tech_label(self):
+        from pub_dialogue.access import AccessStage
+        stage = address.AddressStage(access=AccessStage())
+        assert stage.ai_tech_label == "AI"
+
+    def test_cross_cutting_threshold_matches_module_constant(self):
+        from pub_dialogue.access import AccessStage
+        stage = address.AddressStage(access=AccessStage())
+        assert stage.cross_cutting_threshold == address.CROSSCUTTING_ENTROPY_THRESHOLD
+
+    def test_soft_membership_threshold(self):
+        from pub_dialogue.access import AccessStage
+        stage = address.AddressStage(access=AccessStage())
+        assert stage.soft_membership_threshold == 0.3
+
+    def test_validation_sample_n(self):
+        from pub_dialogue.access import AccessStage
+        stage = address.AddressStage(access=AccessStage())
+        assert stage.validation_sample_n == 250
+
+    def test_fields_are_overridable(self):
+        from pub_dialogue.access import AccessStage
+        stage = address.AddressStage(access=AccessStage(), n_concern_clusters=50)
+        assert stage.n_concern_clusters == 50
+
+
 class TestAddressConstants:
     def test_crosscutting_threshold_in_range(self):
         assert 0.0 < address.CROSSCUTTING_ENTROPY_THRESHOLD <= 1.0
