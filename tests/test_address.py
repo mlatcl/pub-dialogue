@@ -286,3 +286,84 @@ class TestAiFingerprintOverCrosscut:
         cross_mask = pd.Series([True, True, False], index=[0, 1, 2])
         result = address.ai_fingerprint_over_crosscut(sal, cross_mask, ai_col="AI")
         assert isinstance(result, pd.Series)
+
+
+# ===========================================================================
+# run_prompt_sensitivity
+# ===========================================================================
+
+class TestRunPromptSensitivity:
+    """Unit tests for run_prompt_sensitivity using a mock LLMClient."""
+
+    def _make_chunks(self, n=10):
+        return pd.DataFrame({
+            "chunk_id": [f"c{i}" for i in range(n)],
+            "text": [f"Paragraph {i} about technology concerns." for i in range(n)],
+            "technology_meta": ["AI"] * (n // 2) + ["Nuclear"] * (n - n // 2),
+        })
+
+    def _make_client(self, phrases_by_call):
+        """Return a mock client whose complete() cycles through provided phrases."""
+        class MockClient:
+            def __init__(self):
+                self._call_idx = 0
+                self._phrases = phrases_by_call
+
+            def complete(self, messages, **kwargs):
+                result = self._phrases[self._call_idx % len(self._phrases)]
+                self._call_idx += 1
+                return result
+
+            def embed(self, texts):
+                rng = np.random.default_rng(0)
+                return rng.random((len(texts), 16)).tolist()
+
+        return MockClient()
+
+    def test_returns_dataframe_with_expected_columns(self):
+        chunks = self._make_chunks(6)
+        prompts = {"A": "Extract: {text}", "B": "List concerns: {text}"}
+        client = self._make_client(["safety concern\ndata privacy", "NO_CONCERN"])
+        result = address.run_prompt_sensitivity(
+            chunks=chunks, kind="concern", prompts=prompts, client=client, sample_n=6,
+        )
+        assert isinstance(result, pd.DataFrame)
+        assert set(result.columns) >= {"variant_a", "variant_b", "yield_agreement", "n_chunks"}
+        assert len(result) == 1  # one pair from two variants
+
+    def test_yield_agreement_bounds(self):
+        chunks = self._make_chunks(4)
+        prompts = {"A": "Extract: {text}", "B": "List: {text}"}
+        client = self._make_client(["some concern"])
+        result = address.run_prompt_sensitivity(
+            chunks=chunks, kind="concern", prompts=prompts, client=client, sample_n=4,
+        )
+        ya = result.iloc[0]["yield_agreement"]
+        assert 0.0 <= ya <= 1.0
+
+    def test_writes_output_files(self, tmp_path):
+        chunks = self._make_chunks(4)
+        prompts = {"A": "Extract: {text}", "B": "List: {text}"}
+        client = self._make_client(["concern phrase"])
+        address.run_prompt_sensitivity(
+            chunks=chunks, kind="concern", prompts=prompts, client=client,
+            sample_n=4, output_folder=tmp_path,
+        )
+        assert (tmp_path / "prompt_sensitivity_report_concern.csv").exists()
+        assert (tmp_path / "prompt_sensitivity_summary_concern.txt").exists()
+
+    def test_three_variants_produce_three_pairs(self):
+        chunks = self._make_chunks(6)
+        client = self._make_client(["phrase one"])
+        result = address.run_prompt_sensitivity(
+            chunks=chunks, kind="concern",
+            prompts=address.CONCERN_PROMPT_VARIANTS,
+            client=client, sample_n=6,
+        )
+        assert len(result) == 3  # C(3,2) = 3 pairs
+
+    def test_invalid_kind_raises(self):
+        chunks = self._make_chunks(4)
+        client = self._make_client(["x"])
+        with pytest.raises(ValueError, match="kind must be"):
+            address.run_prompt_sensitivity(chunks=chunks, kind="invalid", client=client)

@@ -1161,3 +1161,286 @@ def generate_validation_summary(
     out_path.write_text("\n".join(lines))
     print(f"Validation summary written to {out_path}")
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# Prompt sensitivity analysis (CIP-0008)
+# ---------------------------------------------------------------------------
+
+EXTRACTION_PROMPT_B = """Identify the specific anxieties, objections, or reservations expressed \
+in this paragraph.
+
+CRITICAL RULES:
+1. Remove ALL technology-specific references (AI, nuclear, genetic, nano, etc.)
+2. Capture the underlying worry that could apply to ANY emerging technology
+3. Keep phrases concise (3-10 words each)
+4. Focus on fears and objections, not factual statements
+5. Do NOT use the words 'public dialogue', 'dialogue', 'engagement',
+   'consultation', or 'participation' in your extracted phrases.
+
+EXAMPLES:
+- "People worried about AI making unfair decisions" → "unfair automated decisions"
+- "Concerns about nuclear waste storage" → "long-term waste storage safety"
+- "Distrust of government handling of genetic data" → "distrust of government data handling"
+
+Return 1-3 concern phrases, one per line. No bullets, no numbering.
+If the paragraph contains no clear public concern, return "NO_CONCERN".
+
+Paragraph:
+{text}"""
+
+EXTRACTION_PROMPT_C = """List the public concerns in this paragraph. \
+Be concise (3-8 words per phrase). Return one concern per line.
+Return NO_CONCERN if the paragraph expresses no concerns.
+
+Paragraph:
+{text}"""
+
+BENEFIT_EXTRACTION_PROMPT_B = """Identify the hoped-for gains, opportunities, or positive outcomes \
+expressed in this paragraph.
+
+CRITICAL RULES:
+1. Remove ALL technology-specific references (AI, nuclear, genetic, nano, etc.)
+2. Capture the underlying benefit that could apply to ANY emerging technology
+3. Keep each phrase concise (3-10 words)
+4. Prefer concrete impacts over vague praise
+5. Do NOT include concerns, caveats, or neutral facts
+6. Do NOT use the words 'public dialogue', 'dialogue', 'engagement',
+   'consultation', or 'participation' in your extracted phrases.
+
+EXAMPLES:
+- "AI could help doctors spot cancers earlier" → "earlier disease detection"
+- "Nuclear could provide reliable low-carbon energy" → "reliable low-carbon energy supply"
+- "Robots could take on dangerous tasks" → "reduced human exposure to danger"
+
+Return 1-3 benefit phrases, one per line. No bullets, no numbering.
+If the paragraph contains no clear public benefit, return "NO_BENEFIT".
+
+Paragraph:
+{text}"""
+
+BENEFIT_EXTRACTION_PROMPT_C = """List the public benefits expressed in this paragraph. \
+Be concise (3-8 words per phrase). Return one benefit per line.
+Return NO_BENEFIT if the paragraph expresses no benefits.
+
+Paragraph:
+{text}"""
+
+CONCERN_PROMPT_VARIANTS: Dict[str, str] = {
+    "A_current": EXTRACTION_PROMPT,
+    "B_paraphrase": EXTRACTION_PROMPT_B,
+    "C_minimal": EXTRACTION_PROMPT_C,
+}
+
+BENEFIT_PROMPT_VARIANTS: Dict[str, str] = {
+    "A_current": BENEFIT_EXTRACTION_PROMPT,
+    "B_paraphrase": BENEFIT_EXTRACTION_PROMPT_B,
+    "C_minimal": BENEFIT_EXTRACTION_PROMPT_C,
+}
+
+
+def run_prompt_sensitivity(
+    chunks: "pd.DataFrame",
+    kind: str,
+    prompts: Optional[Dict[str, str]] = None,
+    client=None,
+    sample_n: int = 200,
+    random_seed: int = 42,
+    output_folder: Optional[Path] = None,
+    tech_col: str = "technology_meta",
+    max_tokens: int = 300,
+) -> "pd.DataFrame":
+    """Run extraction with multiple prompt variants and measure inter-prompt agreement.
+
+    For each pair of variants the function reports:
+
+    * **yield_agreement** — fraction of sampled chunks where both variants
+      agree on whether a phrase was extracted (both non-sentinel or both sentinel).
+    * **phrase_agreement** — among chunks where both variants extracted ≥1
+      phrase, the mean fraction of phrases in variant A that have a semantic
+      near-match (cosine similarity ≥ 0.85) in variant B, averaged
+      symmetrically.
+
+    Parameters
+    ----------
+    chunks:
+        DataFrame with at least ``'chunk_id'``, ``'text'``, and *tech_col*
+        columns (typically ``paragraph_chunks.csv``).
+    kind:
+        ``'concern'`` or ``'benefit'``.
+    prompts:
+        Dict mapping variant name → prompt template string (with ``{text}``
+        placeholder).  Defaults to :data:`CONCERN_PROMPT_VARIANTS` or
+        :data:`BENEFIT_PROMPT_VARIANTS`.
+    client:
+        :class:`~pub_dialogue.client.LLMClient` instance.
+    sample_n:
+        Number of chunks to sample (stratified by technology).
+    random_seed:
+        Random state for sampling and reproducibility.
+    output_folder:
+        If provided, writes ``prompt_sensitivity_report_{kind}.csv`` and
+        ``prompt_sensitivity_summary_{kind}.txt``.
+    tech_col:
+        Column name for technology labels (used for stratified sampling).
+    max_tokens:
+        Maximum completion tokens per extraction call.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per variant-pair with columns ``variant_a``, ``variant_b``,
+        ``yield_agreement``, ``phrase_agreement``, ``n_chunks``.
+    """
+    import numpy as np
+    import pandas as pd
+
+    if kind not in ("concern", "benefit"):
+        raise ValueError(f"kind must be 'concern' or 'benefit', got {kind!r}")
+
+    if prompts is None:
+        prompts = CONCERN_PROMPT_VARIANTS if kind == "concern" else BENEFIT_PROMPT_VARIANTS
+
+    sentinel = f"NO_{kind.upper()}"
+    system_msg = (
+        "Extract public concerns. Be concise. Remove technology-specific language."
+        if kind == "concern"
+        else "Extract public benefits. Be concise. Remove technology-specific language."
+    )
+
+    # --- Stratified sample -----------------------------------------------
+    rng = np.random.default_rng(random_seed)
+    if tech_col in chunks.columns:
+        techs = chunks[tech_col].dropna().unique()
+        per_tech = max(1, sample_n // len(techs))
+        parts = []
+        for tech in techs:
+            grp = chunks[chunks[tech_col] == tech]
+            n = min(per_tech, len(grp))
+            idx = rng.choice(len(grp), size=n, replace=False)
+            parts.append(grp.iloc[idx])
+        sample = pd.concat(parts).drop_duplicates(subset="chunk_id").head(sample_n)
+    else:
+        idx = rng.choice(len(chunks), size=min(sample_n, len(chunks)), replace=False)
+        sample = chunks.iloc[idx]
+
+    # --- Extract phrases for each variant ---------------------------------
+    variant_results: Dict[str, Dict[str, list]] = {}  # variant → {chunk_id: [phrases]}
+    for variant_name, prompt_template in prompts.items():
+        print(f"  [{kind}] variant {variant_name!r}: extracting from {len(sample)} chunks…")
+        results: Dict[str, list] = {}
+        for _, row in sample.iterrows():
+            messages = [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": prompt_template.format(text=str(row["text"])[:2000])},
+            ]
+            try:
+                content = client.complete(messages, max_tokens=max_tokens).strip()
+            except Exception:
+                content = sentinel
+            if not content or content in _SENTINELS:
+                results[row["chunk_id"]] = []
+            else:
+                phrases = [
+                    ln.strip()
+                    for ln in content.split("\n")
+                    if ln.strip() and ln.strip() not in _SENTINELS
+                ]
+                results[row["chunk_id"]] = phrases
+        variant_results[variant_name] = results
+
+    # --- Compute pairwise agreement ---------------------------------------
+    variant_names = list(prompts.keys())
+    rows = []
+    for i, va in enumerate(variant_names):
+        for vb in variant_names[i + 1:]:
+            ra, rb = variant_results[va], variant_results[vb]
+            chunk_ids = list(sample["chunk_id"])
+            n = len(chunk_ids)
+
+            # Yield agreement: both flag ≥1 phrase, or both sentinel
+            yield_agree = sum(
+                (bool(ra.get(c)) == bool(rb.get(c))) for c in chunk_ids
+            ) / n
+
+            # Phrase agreement: embed and compute cosine sim
+            both_extracted = [
+                c for c in chunk_ids if ra.get(c) and rb.get(c)
+            ]
+            phrase_agree = float("nan")
+            if both_extracted and client is not None:
+                all_a = [p for c in both_extracted for p in ra[c]]
+                all_b = [p for c in both_extracted for p in rb[c]]
+                unique_phrases = list(dict.fromkeys(all_a + all_b))
+                if unique_phrases:
+                    try:
+                        vecs = np.array(client.embed(unique_phrases))
+                        # normalise
+                        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+                        norms[norms == 0] = 1
+                        vecs = vecs / norms
+                        phrase_idx = {p: i for i, p in enumerate(unique_phrases)}
+
+                        match_fracs = []
+                        for c in both_extracted:
+                            idx_a = [phrase_idx[p] for p in ra[c] if p in phrase_idx]
+                            idx_b = [phrase_idx[p] for p in rb[c] if p in phrase_idx]
+                            if not idx_a or not idx_b:
+                                continue
+                            sim = vecs[idx_a] @ vecs[idx_b].T  # (|a|, |b|)
+                            matched_a = float((sim.max(axis=1) >= 0.85).mean())
+                            matched_b = float((sim.max(axis=0) >= 0.85).mean())
+                            match_fracs.append((matched_a + matched_b) / 2)
+                        if match_fracs:
+                            phrase_agree = float(np.mean(match_fracs))
+                    except Exception:
+                        pass  # embedding unavailable; leave as nan
+
+            rows.append(
+                {
+                    "variant_a": va,
+                    "variant_b": vb,
+                    "yield_agreement": round(yield_agree, 4),
+                    "phrase_agreement": round(phrase_agree, 4) if not (isinstance(phrase_agree, float) and phrase_agree != phrase_agree) else None,
+                    "n_chunks": n,
+                    "n_both_extracted": len(both_extracted),
+                }
+            )
+            print(
+                f"    {va} vs {vb}: yield={yield_agree:.1%}  "
+                f"phrase={phrase_agree:.1%}" if phrase_agree == phrase_agree  # noqa: PLR0124
+                else f"    {va} vs {vb}: yield={yield_agree:.1%}  phrase=n/a"
+            )
+
+    report = pd.DataFrame(rows)
+
+    if output_folder is not None:
+        output_folder = Path(output_folder)
+        csv_path = output_folder / f"prompt_sensitivity_report_{kind}.csv"
+        report.to_csv(csv_path, index=False)
+        print(f"  Report written to {csv_path}")
+
+        thresholds = {"yield_agreement": 0.85, "phrase_agreement": 0.70}
+        lines = [
+            f"Prompt sensitivity summary — {kind}",
+            f"Sample size: {len(sample)} chunks, {len(prompts)} variants",
+            "",
+        ]
+        for _, r in report.iterrows():
+            y_ok = r["yield_agreement"] >= thresholds["yield_agreement"]
+            p_val = r["phrase_agreement"]
+            p_ok = (p_val is not None and p_val >= thresholds["phrase_agreement"])
+            lines += [
+                f"{r['variant_a']} vs {r['variant_b']}:",
+                f"  yield_agreement  = {r['yield_agreement']:.1%}  "
+                f"({'OK' if y_ok else 'BELOW THRESHOLD ≥85%'})",
+                f"  phrase_agreement = {p_val:.1%}  "
+                f"({'OK' if p_ok else 'BELOW THRESHOLD ≥70%'})"
+                if p_val is not None else "  phrase_agreement = n/a",
+                "",
+            ]
+        txt_path = output_folder / f"prompt_sensitivity_summary_{kind}.txt"
+        txt_path.write_text("\n".join(lines))
+        print(f"  Summary written to {txt_path}")
+
+    return report

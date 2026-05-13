@@ -96,6 +96,13 @@ from pub_dialogue.address import (  # noqa: F401
     run_sensitivity,
     _volume_table,
     _top_clusters,
+    EXTRACTION_PROMPT_B,
+    EXTRACTION_PROMPT_C,
+    BENEFIT_EXTRACTION_PROMPT_B,
+    BENEFIT_EXTRACTION_PROMPT_C,
+    CONCERN_PROMPT_VARIANTS,
+    BENEFIT_PROMPT_VARIANTS,
+    run_prompt_sensitivity,
 )
 
 # ---------------------------------------------------------------------------
