@@ -246,3 +246,82 @@ class TestValidateExtractionCacheAssess:
     def test_mostly_empty_cache_returns_false(self):
         cache = {f"c{i}": [] for i in range(10)}
         assert not address.validate_extraction_cache(cache, "concern", warn_threshold=0.0)
+
+
+# ===========================================================================
+# AssessStage methods (CIP-0010 Phase 4)
+# ===========================================================================
+
+class TestAssessStageValidateCache:
+    """validate_cache() delegates to address.validate_extraction_cache."""
+
+    def setup_method(self):
+        from pub_dialogue.access import AccessStage
+        self.stage = assess.AssessStage(access=AccessStage())
+
+    def test_returns_true_for_valid_cache(self):
+        cache = {"c0": ["privacy concern"], "c1": ["job loss"], "c2": ["bias"]}
+        assert self.stage.validate_cache(cache, "concern") is True
+
+    def test_returns_false_for_empty_cache(self):
+        cache = {f"c{i}": [] for i in range(10)}
+        assert self.stage.validate_cache(cache, "concern", warn_threshold=0.0) is False
+
+    def test_accepts_benefit_kind(self):
+        cache = {"c0": ["productivity gain"], "c1": ["efficiency"]}
+        result = self.stage.validate_cache(cache, "benefit")
+        assert isinstance(result, bool)
+
+
+class TestAssessStagePlotQuality:
+    """plot_quality() writes a figure to the access output_folder."""
+
+    def test_uses_access_output_folder(self, tmp_path):
+        from pub_dialogue.access import AccessStage
+        stage = assess.AssessStage(access=AccessStage(output_folder=tmp_path))
+        chunks = _make_chunks_df(n=30)
+        result = stage.plot_quality(chunks)
+        assert result.parent == tmp_path
+
+    def test_file_is_created(self, tmp_path):
+        from pub_dialogue.access import AccessStage
+        stage = assess.AssessStage(access=AccessStage(output_folder=tmp_path))
+        chunks = _make_chunks_df(n=30)
+        path = stage.plot_quality(chunks)
+        assert path.exists()
+
+    def test_custom_filename_respected(self, tmp_path):
+        from pub_dialogue.access import AccessStage
+        stage = assess.AssessStage(access=AccessStage(output_folder=tmp_path))
+        chunks = _make_chunks_df(n=30)
+        path = stage.plot_quality(chunks, filename="custom_quality.png")
+        assert path.name == "custom_quality.png"
+
+
+class TestAssessStageValidationSummary:
+    """validation_summary() delegates to address.generate_validation_summary."""
+
+    def test_delegates_to_generate_validation_summary(self, tmp_path):
+        from pub_dialogue.access import AccessStage
+        from unittest.mock import patch
+        stage = assess.AssessStage(access=AccessStage(output_folder=tmp_path))
+        sentinel = tmp_path / "validation_summary.txt"
+        with patch.object(address, "generate_validation_summary",
+                          return_value=sentinel) as mock_fn:
+            result = stage.validation_summary()
+        mock_fn.assert_called_once_with(tmp_path,
+                                        n_concern_clusters=None,
+                                        n_benefit_clusters=None)
+        assert result == sentinel
+
+    def test_passes_cluster_counts(self, tmp_path):
+        from pub_dialogue.access import AccessStage
+        from unittest.mock import patch
+        stage = assess.AssessStage(access=AccessStage(output_folder=tmp_path))
+        sentinel = tmp_path / "validation_summary.txt"
+        with patch.object(address, "generate_validation_summary",
+                          return_value=sentinel) as mock_fn:
+            stage.validation_summary(n_concern_clusters=75, n_benefit_clusters=75)
+        mock_fn.assert_called_once_with(tmp_path,
+                                        n_concern_clusters=75,
+                                        n_benefit_clusters=75)

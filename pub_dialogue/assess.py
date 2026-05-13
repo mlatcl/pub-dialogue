@@ -11,7 +11,8 @@ technology-term lists, and without inspecting extracted phrases.
 
 Public API:
   Stage class (CIP-0010):
-    AssessStage — typed config dataclass holding an AccessStage reference
+    AssessStage — typed config dataclass with assess-phase helper methods:
+      validate_cache, plot_quality, validation_summary
   Data quality plots:
     plot_data_quality
   Chunk content quality:
@@ -63,6 +64,84 @@ class AssessStage:
     """
 
     access: "AccessStage"
+
+    # -------------------------------------------------------------------
+    # Assess-phase helpers (CIP-0010 Phase 4)
+    # -------------------------------------------------------------------
+
+    def validate_cache(
+        self,
+        cache: "Dict[str, Any]",
+        kind: str,
+        warn_threshold: float = 0.3,
+    ) -> bool:
+        """Check a loaded extraction cache for signs of a partial-failure run.
+
+        Thin wrapper around :func:`pub_dialogue.address.validate_extraction_cache`.
+
+        Parameters
+        ----------
+        cache:          Mapping of ``chunk_id → list[phrase]`` as loaded from JSON.
+        kind:           ``'concern'`` or ``'benefit'``
+        warn_threshold: Fraction of empty entries above which ``False`` is returned.
+        """
+        from pub_dialogue.address import validate_extraction_cache
+        return validate_extraction_cache(cache, kind=kind, warn_threshold=warn_threshold)
+
+    def plot_quality(
+        self,
+        chunks_df: "pd.DataFrame",
+        filename: str = "data_quality_overview.png",
+        dpi: int = 150,
+    ) -> Path:
+        """Produce a 2×2 data-quality summary figure and write it to disk.
+
+        Thin wrapper around :func:`plot_data_quality` that uses
+        ``self.access.output_folder`` as the destination.
+
+        Parameters
+        ----------
+        chunks_df: DataFrame of corpus chunks (must have ``technology``, ``year``,
+                   ``word_count``, ``char_count`` columns).
+        filename:  Output filename (default ``data_quality_overview.png``).
+        dpi:       Figure resolution in dots per inch.
+
+        Returns
+        -------
+        Path of the written figure file.
+        """
+        return plot_data_quality(
+            chunks_df,
+            output_folder=self.access.output_folder,
+            filename=filename,
+            dpi=dpi,
+        )
+
+    def validation_summary(
+        self,
+        n_concern_clusters: Optional[int] = None,
+        n_benefit_clusters: Optional[int] = None,
+    ) -> Path:
+        """Write a plain-text validation summary for Activity 4 of the playbook.
+
+        Thin wrapper around :func:`pub_dialogue.address.generate_validation_summary`
+        that uses ``self.access.output_folder`` as the destination.
+
+        Parameters
+        ----------
+        n_concern_clusters: Total number of concern clusters (optional, for summary).
+        n_benefit_clusters: Total number of benefit clusters (optional, for summary).
+
+        Returns
+        -------
+        Path of the written ``validation_summary.txt`` file.
+        """
+        from pub_dialogue.address import generate_validation_summary
+        return generate_validation_summary(
+            self.access.output_folder,
+            n_concern_clusters=n_concern_clusters,
+            n_benefit_clusters=n_benefit_clusters,
+        )
 
 
 # ---------------------------------------------------------------------------

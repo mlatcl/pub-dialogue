@@ -1,7 +1,7 @@
 ---
 id: "2026-05-13_cip0010-phase4-assessstage-cleanup"
 title: "CIP-0010 Phase 4: AssessStage methods and final notebook audit"
-status: "Ready"
+status: "Completed"
 priority: "Low"
 created: "2026-05-13"
 last_updated: "2026-05-13"
@@ -42,3 +42,9 @@ naked constants, and close out the CIP.
 
 ### 2026-05-13
 Task created. Final phase — depends on Phases 1–3.
+
+### 2026-05-13 (implementation)
+Completed. Added `validate_cache`, `plot_quality`, `validation_summary` to `AssessStage`.
+8 new unit tests (all passing). Updated 00_data_quality, 01_processing, 01a_clustering,
+05_robustness notebooks with stage object setup cells and constant derivation. Updated
+cip/README.md. CIP-0010 marked Closed. 336 tests total, all passing.
