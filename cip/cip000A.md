@@ -3,7 +3,8 @@ author: "Neil Lawrence"
 created: "2026-05-12"
 id: "000A"
 last_updated: "2026-05-13"
-status: "Implemented"
+closed: "2026-05-13"
+status: "Closed"
 compressed: false
 related_requirements: []
 related_cips: ["0003"]
@@ -24,7 +25,7 @@ title: "Split monolithic v19 notebook into thematic analysis notebooks"
 - [x] Accepted - Approved, ready to start work
 - [x] In Progress - Actively being implemented
 - [x] Implemented - Work complete, awaiting verification
-- [ ] Closed - Verified and complete
+- [x] Closed - Verified and complete
 - [ ] Rejected - Will not be implemented
 - [ ] Deferred - Postponed
 
