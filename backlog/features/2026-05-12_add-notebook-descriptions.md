@@ -1,10 +1,10 @@
 ---
 id: "2026-05-12_add-notebook-descriptions"
 title: "Add AI-generated prose descriptions to split notebooks"
-status: "In Progress"
+status: "Completed"
 priority: "Medium"
 created: "2026-05-12"
-last_updated: "2026-05-12"
+last_updated: "2026-05-13"
 category: "documentation"
 related_cips: []
 owner: ""
@@ -68,3 +68,8 @@ full cell source. Generated descriptions are 2–3 sentences of prose.
 ### 2026-05-12
 
 Task created. Script implementation in progress.
+
+### 2026-05-13
+
+Script ran successfully. 21 description cells inserted across all 7 notebooks
+(00–05 + 01a_clustering.ipynb). All acceptance criteria met. Task completed.
