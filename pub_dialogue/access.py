@@ -381,53 +381,79 @@ def load_artifacts(output_folder: Path, checkpoint_folder: Path) -> dict:
     Returns
     -------
     dict with keys:
-        chunks_df, concerns_df, benefits_df,
-        concern_embeddings, concern_ids,
-        benefit_embeddings, benefit_ids,
-        concern_centroids, benefit_centroids,
-        cluster_labels, cluster_summary_df,
-        benefit_cluster_labels, benefit_cluster_summary_df,
-        framing_lens_mappings, benefit_framing_lens_mappings,
-        cluster_entropy, cluster_entropy_norm, cross_cutting_clusters,
-        benefit_cluster_entropy, normalized_entropy_benefits,
-        cross_cutting_clusters_benefits.
+        Always present (written by 01_processing.ipynb):
+            chunks_df, concerns_df, benefits_df,
+            concern_embeddings, concern_ids,
+            benefit_embeddings, benefit_ids.
+        Optional — ``None`` when 01a_clustering.ipynb has not yet been run:
+            concern_centroids, benefit_centroids,
+            cluster_labels, cluster_summary_df,
+            benefit_cluster_labels, benefit_cluster_summary_df,
+            framing_lens_mappings, benefit_framing_lens_mappings,
+            cluster_entropy, cluster_entropy_norm, cross_cutting_clusters,
+            benefit_cluster_entropy, normalized_entropy_benefits,
+            cross_cutting_clusters_benefits.
     """
     out = Path(output_folder)
     ckpt = Path(checkpoint_folder)
     a: Dict[str, Any] = {}
 
-    a["chunks_df"]   = pd.read_csv(out / "paragraph_chunks.csv")
-    a["concerns_df"] = pd.read_csv(out / "extracted_concerns.csv")
-    a["benefits_df"] = pd.read_csv(out / "extracted_benefits.csv")
-    a["cluster_summary_df"]         = pd.read_csv(out / "cluster_summary.csv")
-    a["benefit_cluster_summary_df"] = pd.read_csv(out / "benefit_cluster_summary.csv")
+    # --- always present after 01_processing.ipynb ---
+    a["chunks_df"]          = pd.read_csv(out / "paragraph_chunks.csv")
+    a["concerns_df"]        = pd.read_csv(out / "extracted_concerns.csv")
+    a["benefits_df"]        = pd.read_csv(out / "extracted_benefits.csv")
 
-    a["concern_embeddings"]  = np.load(ckpt / "concern_embeddings.npy")
-    a["benefit_embeddings"]  = np.load(ckpt / "benefit_embeddings.npy")
-    a["concern_centroids"]   = np.load(ckpt / "cluster_centroids.npy")
-    a["benefit_centroids"]   = np.load(ckpt / "benefit_cluster_centroids.npy")
+    a["concern_embeddings"] = np.load(ckpt / "concern_embeddings.npy")
+    a["benefit_embeddings"] = np.load(ckpt / "benefit_embeddings.npy")
 
     for name, path in [
-        ("concern_ids",                   ckpt / "concern_ids.json"),
-        ("benefit_ids",                   ckpt / "benefit_ids.json"),
-        ("cluster_labels",                out  / "cluster_labels.json"),
-        ("benefit_cluster_labels",        out  / "benefit_cluster_labels.json"),
-        ("framing_lens_mappings",         out  / "framing_lens_mappings.json"),
-        ("benefit_framing_lens_mappings", out  / "benefit_framing_lens_mappings.json"),
+        ("concern_ids", ckpt / "concern_ids.json"),
+        ("benefit_ids", ckpt / "benefit_ids.json"),
     ]:
         with open(path) as _f:
             a[name] = json.load(_f)
 
-    with open(out / "cluster_entropy.json") as _f:
-        _d = json.load(_f)
-        a["cluster_entropy"]        = {int(k): v for k, v in _d["raw"].items()}
-        a["cluster_entropy_norm"]   = {int(k): v for k, v in _d["norm"].items()}
-        a["cross_cutting_clusters"] = _d["cross_cutting"]
+    # --- optional: only present after 01a_clustering.ipynb ---
+    def _load_npy(path: Path):
+        return np.load(path) if path.exists() else None
 
-    with open(out / "benefit_cluster_entropy.json") as _f:
-        _d = json.load(_f)
-        a["benefit_cluster_entropy"]         = {int(k): v for k, v in _d["raw"].items()}
-        a["normalized_entropy_benefits"]     = {int(k): v for k, v in _d["norm"].items()}
-        a["cross_cutting_clusters_benefits"] = _d["cross_cutting"]
+    def _load_csv(path: Path):
+        return pd.read_csv(path) if path.exists() else None
+
+    def _load_json(path: Path):
+        if not path.exists():
+            return None
+        with open(path) as _f:
+            return json.load(_f)
+
+    a["concern_centroids"]          = _load_npy(ckpt / "cluster_centroids.npy")
+    a["benefit_centroids"]          = _load_npy(ckpt / "benefit_cluster_centroids.npy")
+    a["cluster_summary_df"]         = _load_csv(out  / "cluster_summary.csv")
+    a["benefit_cluster_summary_df"] = _load_csv(out  / "benefit_cluster_summary.csv")
+
+    for name, path in [
+        ("cluster_labels",                out / "cluster_labels.json"),
+        ("benefit_cluster_labels",        out / "benefit_cluster_labels.json"),
+        ("framing_lens_mappings",         out / "framing_lens_mappings.json"),
+        ("benefit_framing_lens_mappings", out / "benefit_framing_lens_mappings.json"),
+    ]:
+        a[name] = _load_json(path)
+
+    _ce = _load_json(out / "cluster_entropy.json")
+    if _ce is not None:
+        a["cluster_entropy"]        = {int(k): v for k, v in _ce["raw"].items()}
+        a["cluster_entropy_norm"]   = {int(k): v for k, v in _ce["norm"].items()}
+        a["cross_cutting_clusters"] = _ce["cross_cutting"]
+    else:
+        a["cluster_entropy"] = a["cluster_entropy_norm"] = a["cross_cutting_clusters"] = None
+
+    _bce = _load_json(out / "benefit_cluster_entropy.json")
+    if _bce is not None:
+        a["benefit_cluster_entropy"]         = {int(k): v for k, v in _bce["raw"].items()}
+        a["normalized_entropy_benefits"]     = {int(k): v for k, v in _bce["norm"].items()}
+        a["cross_cutting_clusters_benefits"] = _bce["cross_cutting"]
+    else:
+        a["benefit_cluster_entropy"] = a["normalized_entropy_benefits"] = \
+            a["cross_cutting_clusters_benefits"] = None
 
     return a
