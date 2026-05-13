@@ -1,7 +1,7 @@
 ---
 id: "2026-05-12_add-load-artifacts"
 title: "Add load_artifacts() to dialogue_utils.py with tests"
-status: "In Progress"
+status: "Completed"
 priority: "High"
 created: "2026-05-12"
 last_updated: "2026-05-12"

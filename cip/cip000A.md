@@ -244,7 +244,7 @@ this CIP is itself the design record.
 
 ## Implementation Status
 
-- [ ] Add `load_artifacts()` to `dialogue_utils.py` + tests
+- [x] Add `load_artifacts()` to `dialogue_utils.py` + tests
 - [x] Add entropy saves to v19 cells 20 and 58
 - [x] Fix Figure 4 filename (cell 99)
 - [x] Move `validate_extraction_cache`, `write_extraction_diagnostics`, `entropy_by_year`, `generate_validation_summary` from `assess.py` to `address.py`
