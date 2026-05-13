@@ -3,7 +3,7 @@ author: "Neil Lawrence"
 created: "2026-05-12"
 id: "000A"
 last_updated: "2026-05-13"
-status: "In Progress"
+status: "Implemented"
 compressed: false
 related_requirements: []
 related_cips: ["0003"]
@@ -23,7 +23,7 @@ title: "Split monolithic v19 notebook into thematic analysis notebooks"
 - [x] Proposed - Initial idea documented
 - [x] Accepted - Approved, ready to start work
 - [x] In Progress - Actively being implemented
-- [ ] Implemented - Work complete, awaiting verification
+- [x] Implemented - Work complete, awaiting verification
 - [ ] Closed - Verified and complete
 - [ ] Rejected - Will not be implemented
 - [ ] Deferred - Postponed
@@ -250,10 +250,10 @@ this CIP is itself the design record.
 - [x] Move `validate_extraction_cache`, `write_extraction_diagnostics`, `entropy_by_year`, `generate_validation_summary` from `assess.py` to `address.py`
 - [x] Remove API setup and address-phase constants from `00_data_quality.ipynb`
 - [x] Consolidate chunk quality diagnostics; add Access→Address boundary marker in `01_processing.ipynb`
-- [ ] Write `scripts/split_notebook.py`
-- [ ] Run split script → produce 6 notebooks
-- [ ] Add manifest cell to `01_processing.ipynb`
-- [ ] Run full test suite
+- [x] Write `scripts/split_notebook.py`
+- [x] Run split script → produce 6 notebooks
+- [x] Add manifest cell to `01_processing.ipynb` / `01a_clustering.ipynb`
+- [x] Run full test suite
 
 ## References
 

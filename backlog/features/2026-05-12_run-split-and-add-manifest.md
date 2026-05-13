@@ -1,7 +1,7 @@
 ---
 id: "2026-05-12_run-split-and-add-manifest"
 title: "Run split script and add manifest cell to 01_processing.ipynb"
-status: "In Progress"
+status: "Completed"
 priority: "High"
 created: "2026-05-12"
 last_updated: "2026-05-12"

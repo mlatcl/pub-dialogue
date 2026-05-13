@@ -1,7 +1,7 @@
 ---
 id: "2026-05-12_write-split-script"
 title: "Write scripts/split_notebook.py to produce 6 thematic notebooks"
-status: "In Progress"
+status: "Completed"
 priority: "High"
 created: "2026-05-12"
 last_updated: "2026-05-12"
