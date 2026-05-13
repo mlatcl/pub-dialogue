@@ -1,7 +1,7 @@
 ---
 id: "2026-05-12_add-entropy-saves"
 title: "Persist entropy dicts to disk in v19 cells 20 and 58"
-status: "In Progress"
+status: "Completed"
 priority: "High"
 created: "2026-05-12"
 last_updated: "2026-05-12"

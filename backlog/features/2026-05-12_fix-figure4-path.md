@@ -1,7 +1,7 @@
 ---
 id: "2026-05-12_fix-figure4-path"
 title: "Fix Figure 4 cell: wrong traceability CSV filename"
-status: "In Progress"
+status: "Completed"
 priority: "Medium"
 created: "2026-05-12"
 last_updated: "2026-05-12"
