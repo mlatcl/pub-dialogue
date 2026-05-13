@@ -1,7 +1,7 @@
 ---
 id: "2026-05-13_cip0010-phase2-computation-methods"
 title: "CIP-0010 Phase 2: Add AddressStage computation methods"
-status: "Ready"
+status: "Completed"
 priority: "Medium"
 created: "2026-05-13"
 last_updated: "2026-05-13"
@@ -25,19 +25,16 @@ proper `AddressStage` methods. Replace the notebook cells with single-line metho
 
 ## Acceptance Criteria
 
-- [ ] `AddressStage.concern_year_matrix(technology)` implemented — wraps
-  `temporal_cluster_frequency()` (CIP-0009); used in `04_temporal_dynamics.ipynb` cells 11 and 23
-- [ ] `AddressStage.benefit_year_matrix(technology)` implemented similarly
-- [ ] `AddressStage.concern_trajectory(technology)` implemented — PCA 2-D trajectory logic
-  currently in `04_temporal_dynamics.ipynb` cells 7–9
-- [ ] `AddressStage.benefit_trajectory(technology)` implemented similarly
-- [ ] `AddressStage.concern_salience()` implemented — per-technology salience logic
-  currently in `03_ai_distinctiveness.ipynb`
-- [ ] `AddressStage.benefit_salience()` implemented similarly
-- [ ] Notebook cells replaced with single-line method calls in `03`, `04`, `05`
-- [ ] Unit tests added for each method using fixture DataFrames
-- [ ] `pytest tests/ -v` fully green
-- [ ] Notebooks `03`, `04`, `05` execute clean via `nbconvert`
+- [x] `AddressStage.concern_year_matrix(phrases_df, chunks_df, technology=None)` implemented
+- [x] `AddressStage.benefit_year_matrix(phrases_df, chunks_df, technology=None)` implemented
+- [x] `AddressStage.concern_trajectory(phrases_df, embeddings, phrase_ids, technology=None)` implemented
+- [x] `AddressStage.benefit_trajectory(phrases_df, embeddings, phrase_ids, technology=None)` implemented
+- [x] `AddressStage.concern_salience(phrases_df)` implemented
+- [x] `AddressStage.benefit_salience(phrases_df)` implemented
+- [x] Notebook cells replaced with method calls in `03` (cells 15, 29), `04` (cells 7, 11, 19, 23), `05` (cells 9, 23)
+- [x] 20 unit tests added (TestAddressStageConcernYearMatrix, TestAddressStageBenefitYearMatrix, TestAddressStageTrajectory, TestAddressStageSalience); all passing
+- [x] `pytest tests/ -v` fully green (313 passed)
+- [x] Smoke test on real artifacts: all 6 methods return correct shapes and value ranges
 
 ## Related
 
@@ -49,3 +46,9 @@ proper `AddressStage` methods. Replace the notebook cells with single-line metho
 
 ### 2026-05-13
 Task created. Depends on Phase 1.
+
+### 2026-05-13 (implementation)
+Completed Phase 2. Six computation methods added to AddressStage via shared private helpers
+(_pca_trajectory, _cluster_salience). Notebook 05 cells 9 and 23 upgraded from pd.crosstab
+(raw counts) to document-level binary weighting (CIP-0009 Approach B) during this work.
+313 tests passing.

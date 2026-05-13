@@ -73,6 +73,188 @@ class TestAddressStageDefaults:
         assert stage.n_concern_clusters == 50
 
 
+# ===========================================================================
+# AddressStage computation methods (CIP-0010 Phase 2)
+# ===========================================================================
+
+def _make_access_stage():
+    from pub_dialogue.access import AccessStage
+    return AccessStage()
+
+
+def _minimal_phrases(kind="concern", n=6):
+    """Minimal phrases DataFrame with required columns.
+
+    chunk_id links to _minimal_chunks() so temporal_cluster_frequency can join.
+    """
+    phrase_col = "concern_id" if kind == "concern" else "benefit_id"
+    return pd.DataFrame({
+        phrase_col: range(n),
+        "chunk_id": range(n),          # matches _minimal_chunks chunk_id
+        "cluster_id": [0, 0, 1, 1, 2, 2],
+        "year": [2020, 2021, 2020, 2021, 2020, 2021],
+        "technology_meta": ["AI", "AI", "AI", "Other", "Other", "Other"],
+        "source_file": ["a.pdf", "b.pdf", "c.pdf", "d.pdf", "e.pdf", "f.pdf"],
+    })
+
+
+def _minimal_chunks(n=6):
+    """Minimal chunks DataFrame with required columns."""
+    return pd.DataFrame({
+        "chunk_id": range(n),
+        "year": [2020, 2021, 2020, 2021, 2020, 2021],
+        "technology_meta": ["AI", "AI", "AI", "Other", "Other", "Other"],
+        "source_file": ["a.pdf", "b.pdf", "c.pdf", "d.pdf", "e.pdf", "f.pdf"],
+    })
+
+
+class TestAddressStageConcernYearMatrix:
+    """Unit tests for AddressStage.concern_year_matrix()."""
+
+    def setup_method(self):
+        self.stage = address.AddressStage(access=_make_access_stage())
+        self.phrases = _minimal_phrases("concern")
+        self.chunks = _minimal_chunks()
+
+    def test_returns_dataframe(self):
+        result = self.stage.concern_year_matrix(self.phrases, self.chunks)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_rows_are_years(self):
+        result = self.stage.concern_year_matrix(self.phrases, self.chunks)
+        assert set(result.index).issubset({2020, 2021})
+
+    def test_columns_are_cluster_ids(self):
+        result = self.stage.concern_year_matrix(self.phrases, self.chunks)
+        assert all(isinstance(c, (int, np.integer)) for c in result.columns)
+
+    def test_values_are_fractions(self):
+        result = self.stage.concern_year_matrix(self.phrases, self.chunks)
+        assert (result.values >= 0).all()
+        assert (result.values <= 1.0 + 1e-9).all()
+
+    def test_custom_technology(self):
+        result = self.stage.concern_year_matrix(self.phrases, self.chunks, technology="Other")
+        assert isinstance(result, pd.DataFrame)
+
+    def test_default_technology_uses_ai_tech_label(self):
+        result_default = self.stage.concern_year_matrix(self.phrases, self.chunks)
+        result_explicit = self.stage.concern_year_matrix(
+            self.phrases, self.chunks, technology=self.stage.ai_tech_label
+        )
+        pd.testing.assert_frame_equal(result_default, result_explicit)
+
+
+class TestAddressStageBenefitYearMatrix:
+    """Unit tests for AddressStage.benefit_year_matrix()."""
+
+    def setup_method(self):
+        self.stage = address.AddressStage(access=_make_access_stage())
+        self.phrases = _minimal_phrases("benefit")
+        self.chunks = _minimal_chunks()
+
+    def test_returns_dataframe(self):
+        result = self.stage.benefit_year_matrix(self.phrases, self.chunks)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_values_are_fractions(self):
+        result = self.stage.benefit_year_matrix(self.phrases, self.chunks)
+        assert (result.values >= 0).all()
+        assert (result.values <= 1.0 + 1e-9).all()
+
+
+class TestAddressStageTrajectory:
+    """Unit tests for AddressStage.concern_trajectory() and benefit_trajectory()."""
+
+    def setup_method(self):
+        self.stage = address.AddressStage(access=_make_access_stage())
+
+    def _make_trajectory_inputs(self, kind="concern"):
+        phrase_col = "concern_id" if kind == "concern" else "benefit_id"
+        n = 8
+        phrases = pd.DataFrame({
+            phrase_col: range(n),
+            "year": [2019, 2019, 2020, 2020, 2021, 2021, 2022, 2022],
+            "technology_meta": ["AI"] * n,
+        })
+        np.random.seed(42)
+        embeddings = np.random.rand(n, 16).astype(np.float32)
+        return phrases, embeddings, list(range(n))
+
+    def test_concern_returns_dataframe(self):
+        phrases, emb, ids = self._make_trajectory_inputs("concern")
+        result = self.stage.concern_trajectory(phrases, emb, ids)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_concern_columns(self):
+        phrases, emb, ids = self._make_trajectory_inputs("concern")
+        result = self.stage.concern_trajectory(phrases, emb, ids)
+        assert set(result.columns) >= {"year", "pc1", "pc2"}
+
+    def test_concern_one_row_per_year(self):
+        phrases, emb, ids = self._make_trajectory_inputs("concern")
+        result = self.stage.concern_trajectory(phrases, emb, ids)
+        assert len(result) == 4  # 4 distinct years
+
+    def test_concern_empty_input_returns_empty(self):
+        phrases = pd.DataFrame({"concern_id": [], "year": [], "technology_meta": []})
+        embeddings = np.zeros((0, 16), dtype=np.float32)
+        result = self.stage.concern_trajectory(phrases, embeddings, [])
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 0
+
+    def test_benefit_returns_dataframe(self):
+        phrases, emb, ids = self._make_trajectory_inputs("benefit")
+        result = self.stage.benefit_trajectory(phrases, emb, ids)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_benefit_columns(self):
+        phrases, emb, ids = self._make_trajectory_inputs("benefit")
+        result = self.stage.benefit_trajectory(phrases, emb, ids)
+        assert set(result.columns) >= {"year", "pc1", "pc2"}
+
+
+class TestAddressStageSalience:
+    """Unit tests for AddressStage.concern_salience() and benefit_salience()."""
+
+    def setup_method(self):
+        self.stage = address.AddressStage(access=_make_access_stage())
+
+    def _make_salience_input(self, kind="concern"):
+        phrase_col = "concern_id" if kind == "concern" else "benefit_id"
+        return pd.DataFrame({
+            phrase_col: range(12),
+            "cluster_id": [0, 0, 1, 1, 2, 2, 0, 1, 2, 0, 1, 2],
+            "technology_meta": ["AI"] * 6 + ["Other"] * 6,
+        })
+
+    def test_concern_returns_dataframe(self):
+        result = self.stage.concern_salience(self._make_salience_input("concern"))
+        assert isinstance(result, pd.DataFrame)
+
+    def test_concern_rows_are_technologies(self):
+        result = self.stage.concern_salience(self._make_salience_input("concern"))
+        assert set(result.index) == {"AI", "Other"}
+
+    def test_concern_columns_are_ints(self):
+        result = self.stage.concern_salience(self._make_salience_input("concern"))
+        assert all(isinstance(c, (int, np.integer)) for c in result.columns)
+
+    def test_concern_rows_sum_to_one(self):
+        result = self.stage.concern_salience(self._make_salience_input("concern"))
+        for _, row in result.iterrows():
+            assert abs(row.sum() - 1.0) < 1e-9, f"Row sum = {row.sum()}"
+
+    def test_benefit_returns_dataframe(self):
+        result = self.stage.benefit_salience(self._make_salience_input("benefit"))
+        assert isinstance(result, pd.DataFrame)
+
+    def test_benefit_rows_sum_to_one(self):
+        result = self.stage.benefit_salience(self._make_salience_input("benefit"))
+        for _, row in result.iterrows():
+            assert abs(row.sum() - 1.0) < 1e-9
+
+
 class TestAddressConstants:
     def test_crosscutting_threshold_in_range(self):
         assert 0.0 < address.CROSSCUTTING_ENTROPY_THRESHOLD <= 1.0

@@ -154,6 +154,194 @@ class AddressStage:
     soft_membership_threshold: float = 0.3
     validation_sample_n: int = 250
 
+    # -------------------------------------------------------------------
+    # Year × cluster matrices (CIP-0009 document-level weighting)
+    # -------------------------------------------------------------------
+
+    def concern_year_matrix(
+        self,
+        phrases_df: "pd.DataFrame",
+        chunks_df: "pd.DataFrame",
+        technology: Optional[str] = None,
+    ) -> "pd.DataFrame":
+        """Return a year × cluster fraction matrix for concerns.
+
+        Uses CIP-0009 document-level binary weighting (each document counted
+        at most once per cluster per year).  Columns are all concern cluster IDs
+        found in *phrases_df*, filled with 0.0 where absent.
+
+        Parameters
+        ----------
+        phrases_df: concerns DataFrame (must have cluster_id, year, tech_col, source_file)
+        chunks_df:  all chunks (must have year, tech_col, source_file)
+        technology: technology label to filter by; defaults to ``ai_tech_label``
+        """
+        tech = technology if technology is not None else self.ai_tech_label
+        result = temporal_cluster_frequency(
+            phrases_df=phrases_df,
+            chunks_df=chunks_df,
+            kind="concern",
+            tech_filter=tech,
+            tech_col=self.tech_col,
+        )
+        all_clusters = sorted(
+            phrases_df["cluster_id"].dropna().unique().astype(int).tolist()
+        )
+        return result.reindex(columns=all_clusters, fill_value=0.0)
+
+    def benefit_year_matrix(
+        self,
+        phrases_df: "pd.DataFrame",
+        chunks_df: "pd.DataFrame",
+        technology: Optional[str] = None,
+    ) -> "pd.DataFrame":
+        """Return a year × cluster fraction matrix for benefits.
+
+        Same document-level binary weighting as :meth:`concern_year_matrix`.
+        """
+        tech = technology if technology is not None else self.ai_tech_label
+        result = temporal_cluster_frequency(
+            phrases_df=phrases_df,
+            chunks_df=chunks_df,
+            kind="benefit",
+            tech_filter=tech,
+            tech_col=self.tech_col,
+        )
+        all_clusters = sorted(
+            phrases_df["cluster_id"].dropna().unique().astype(int).tolist()
+        )
+        return result.reindex(columns=all_clusters, fill_value=0.0)
+
+    # -------------------------------------------------------------------
+    # PCA embedding trajectories
+    # -------------------------------------------------------------------
+
+    def _pca_trajectory(
+        self,
+        phrases_df: "pd.DataFrame",
+        embeddings: "np.ndarray",
+        phrase_ids: list,
+        phrase_id_col: str,
+        technology: Optional[str] = None,
+    ) -> "pd.DataFrame":
+        """Shared implementation for concern and benefit PCA trajectories."""
+        from sklearn.decomposition import PCA
+
+        tech = technology if technology is not None else self.ai_tech_label
+        filtered = phrases_df[phrases_df[self.tech_col] == tech].copy()
+        filtered = filtered.dropna(subset=["year"])
+        filtered["year"] = filtered["year"].astype(int)
+
+        id_to_idx = {pid: i for i, pid in enumerate(phrase_ids)}
+        rows = []
+        for yr, group in filtered.groupby("year"):
+            idxs = [
+                id_to_idx[pid]
+                for pid in group[phrase_id_col]
+                if pid in id_to_idx
+            ]
+            if not idxs:
+                continue
+            avg_emb = embeddings[np.array(idxs)].mean(axis=0)
+            rows.append({"year": int(yr), "embedding": avg_emb})
+
+        if not rows:
+            return pd.DataFrame({"year": [], "pc1": [], "pc2": []})
+
+        emb_matrix = np.stack([r["embedding"] for r in rows])
+        n_comp = min(2, emb_matrix.shape[0])
+        pca = PCA(n_components=n_comp)
+        coords = pca.fit_transform(emb_matrix)
+        return pd.DataFrame({
+            "year": [r["year"] for r in rows],
+            "pc1": coords[:, 0],
+            "pc2": coords[:, 1] if n_comp > 1 else 0.0,
+        })
+
+    def concern_trajectory(
+        self,
+        phrases_df: "pd.DataFrame",
+        embeddings: "np.ndarray",
+        phrase_ids: list,
+        technology: Optional[str] = None,
+    ) -> "pd.DataFrame":
+        """Compute per-year mean-embedding PCA trajectory for concerns.
+
+        Parameters
+        ----------
+        phrases_df: concerns DataFrame (must have concern_id, year, tech_col)
+        embeddings: numpy array of shape (n_phrases, embedding_dim)
+        phrase_ids: ordered list of concern IDs matching ``embeddings`` rows
+        technology: filter; defaults to ``ai_tech_label``
+
+        Returns
+        -------
+        DataFrame with columns year, pc1, pc2 (one row per year)
+        """
+        return self._pca_trajectory(
+            phrases_df, embeddings, phrase_ids, "concern_id", technology
+        )
+
+    def benefit_trajectory(
+        self,
+        phrases_df: "pd.DataFrame",
+        embeddings: "np.ndarray",
+        phrase_ids: list,
+        technology: Optional[str] = None,
+    ) -> "pd.DataFrame":
+        """Compute per-year mean-embedding PCA trajectory for benefits.
+
+        Same logic as :meth:`concern_trajectory` but for benefits.
+        """
+        return self._pca_trajectory(
+            phrases_df, embeddings, phrase_ids, "benefit_id", technology
+        )
+
+    # -------------------------------------------------------------------
+    # Per-technology cluster salience matrices
+    # -------------------------------------------------------------------
+
+    def _cluster_salience(
+        self,
+        phrases_df: "pd.DataFrame",
+        phrase_id_col: str,
+    ) -> "pd.DataFrame":
+        """Shared implementation for concern/benefit salience."""
+        technologies = sorted(
+            phrases_df[self.tech_col].dropna().unique().tolist()
+        )
+        salience_by_tech: dict = {}
+        for tech in technologies:
+            mask = phrases_df[self.tech_col] == tech
+            total = mask.sum()
+            if total == 0:
+                continue
+            counts = phrases_df.loc[mask, "cluster_id"].value_counts()
+            salience_by_tech[tech] = (counts / total).to_dict()
+
+        result = pd.DataFrame(salience_by_tech).T.fillna(0)
+        result.columns = result.columns.astype(int)
+        return result
+
+    def concern_salience(self, phrases_df: "pd.DataFrame") -> "pd.DataFrame":
+        """Return a technology × cluster_id salience matrix for concerns.
+
+        Each cell gives the fraction of that technology's concern phrases
+        belonging to the cluster.  Rows sum to 1.0.
+
+        Parameters
+        ----------
+        phrases_df: concerns DataFrame (must have cluster_id and tech_col)
+        """
+        return self._cluster_salience(phrases_df, "concern_id")
+
+    def benefit_salience(self, phrases_df: "pd.DataFrame") -> "pd.DataFrame":
+        """Return a technology × cluster_id salience matrix for benefits.
+
+        Same structure as :meth:`concern_salience`.
+        """
+        return self._cluster_salience(phrases_df, "benefit_id")
+
 DEFAULT_TECH_WORDS: List[str] = [
     "ai", "artificial intelligence", "nuclear", "genetic", "nano",
     "genome", "robot", "drone", "quantum", "gm", "embryo", "stem cell",
