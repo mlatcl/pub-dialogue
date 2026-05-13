@@ -22,7 +22,7 @@ title: "Refactor Notebook Imports to Lazy, Co-located Style"
 - [x] Proposed - Initial idea documented
 - [x] Accepted - Approved, ready to start work
 - [x] In Progress - Actively being implemented
-- [ ] Implemented - Work complete, awaiting verification
+- [x] Implemented - Work complete, awaiting verification
 - [ ] Closed - Verified and complete
 - [ ] Rejected - Will not be implemented (add reason, use superseded_by if replaced)
 - [ ] Deferred - Postponed (use blocked_by field to indicate blocker)
@@ -116,13 +116,13 @@ No formal requirements exist yet for notebook style. This CIP operationalises th
 
 ## Implementation Status
 
-- [ ] Pilot refactor: `00_data_quality.ipynb`
-- [ ] Refactor: `01_processing.ipynb`
-- [ ] Refactor: `01a_clustering.ipynb`
-- [ ] Refactor: `02_shared_structure.ipynb`
-- [ ] Refactor: `03_ai_distinctiveness.ipynb`
-- [ ] Refactor: `04_temporal_dynamics.ipynb`
-- [ ] Refactor: `05_robustness.ipynb`
+- [x] Pilot refactor: `00_data_quality.ipynb`
+- [x] Refactor: `01_processing.ipynb`
+- [x] Refactor: `01a_clustering.ipynb`
+- [x] Refactor: `02_shared_structure.ipynb` — already co-located; no changes needed
+- [x] Refactor: `03_ai_distinctiveness.ipynb` — already co-located; no changes needed
+- [x] Refactor: `04_temporal_dynamics.ipynb` — already co-located; no changes needed
+- [x] Refactor: `05_robustness.ipynb` — already co-located; no changes needed
 
 ## References
 
