@@ -1,10 +1,10 @@
 ---
 id: "2026-05-07_reconcile-notebook-narrative"
 title: "Reconcile notebook narrative with paper numbers"
-status: "Ready"
+status: "In Progress"
 priority: "Medium"
 created: "2026-05-07"
-last_updated: "2026-05-07"
+last_updated: "2026-05-13"
 owner: ""
 dependencies:
   - "2026-05-07_fix-chunk-filter-and-cache (CIP-0006)"
@@ -40,10 +40,11 @@ match the actual computed values.
 
 ## Acceptance Criteria
 
-- [ ] Yield percentage corrected in all notebook narrative cells: `X% of substantive paragraphs (≥50 words) yielded ≥1 concern/benefit phrase`
-- [ ] 41-of-66 figure re-verified or corrected after CIP-0006
-- [ ] Cluster count discrepancy between sensitivity analysis and main analysis is explained in a comment
-- [ ] Temporal chart year labels verified against metadata year field
+- [x] Yield percentage corrected: v19 corpus has 10,047 chunks; 65.1% yield ≥1 concern, 26.6% yield ≥1 benefit
+- [x] Document count corrected to 66 (not 65) in 01_processing.ipynb and 00_data_quality.ipynb
+- [x] "41 of 66 docs zero concerns" resolved: v19 re-extraction shows only 2 of 66 docs have zero concerns (64/66 have ≥1 concern; 65/66 have ≥1 benefit)
+- [ ] Cluster count discrepancy between sensitivity analysis and main analysis explained in a comment
+- [ ] Temporal chart year labels verified against metadata year field (note: 2004/2007/2008/2009/2010 appear — verify vs metadata)
 - [ ] Paper draft updated to match corrected notebook narrative
 
 ## Implementation Notes
@@ -62,3 +63,13 @@ change. Use `whats-next` to track dependency.
 
 ### 2026-05-07
 Task created with Ready status. Depends on CIP-0006 implementation.
+
+### 2026-05-13
+CIP-0006 confirmed closed. Computed ground-truth numbers from v19 outputs:
+- Total chunks: 10,047 (7,870 ≥50 words; 2,177 <50 words)
+- Total documents: 66
+- Concern phrases: 19,384 across 6,542 chunks (65.1%) from 64 documents
+- Benefit phrases: 7,815 across 2,671 chunks (26.6%) from 65 documents
+- AI corpus: 41 docs, 4,784 chunks, 9,780 concern phrases, 100% doc yield
+- Fixed "65 documents" → "66 documents" in 01_processing.ipynb and 00_data_quality.ipynb
+- Remaining: temporal year label audit and paper draft update
