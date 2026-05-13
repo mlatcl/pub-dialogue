@@ -1164,6 +1164,127 @@ def generate_validation_summary(
 
 
 # ---------------------------------------------------------------------------
+# Temporal cluster frequency — document-level weighting (CIP-0009, Approach B)
+# ---------------------------------------------------------------------------
+
+def temporal_cluster_frequency(
+    phrases_df: "pd.DataFrame",
+    chunks_df: "pd.DataFrame",
+    kind: str,
+    tech_filter: Optional[str] = None,
+    tech_col: str = "technology_meta",
+    doc_col: str = "source_file",
+    year_col: str = "year",
+    cluster_col: str = "cluster_id",
+) -> "pd.DataFrame":
+    """Return document-weighted temporal cluster frequency (CIP-0009 Approach B).
+
+    **Methodology (Approach B — selected 2026-05-13):**
+    For each ``(year, cluster_id)`` the value is the *fraction of documents in
+    that year* that mention at least one phrase assigned to that cluster.  This
+    removes two confounds present in raw phrase counts:
+
+    * **Volume bias**: years with more dialogues conducted would otherwise
+      dominate raw counts regardless of what participants said.
+    * **Length bias**: longer documents contribute more phrases and therefore
+      appear more prominent than shorter documents on the same topic.
+
+    The result can be interpreted as "what percentage of AI public dialogue
+    documents published in year Y raised concern/benefit cluster C?".
+
+    Parameters
+    ----------
+    phrases_df:
+        ``concerns_df`` or ``benefits_df`` with at least ``chunk_id`` and
+        *cluster_col* columns.
+    chunks_df:
+        ``paragraph_chunks`` DataFrame with ``chunk_id``, *doc_col*, *year_col*,
+        and *tech_col* columns.
+    kind:
+        ``'concern'`` or ``'benefit'`` (used for validation only).
+    tech_filter:
+        If provided, restrict to documents whose *tech_col* equals this value
+        (e.g. ``'AI'``).
+    tech_col:
+        Column name for technology labels in *chunks_df*.
+    doc_col:
+        Column name for document identifier in *chunks_df* (default
+        ``'source_file'``).
+    year_col:
+        Column name for year in *chunks_df* (default ``'year'``).
+    cluster_col:
+        Column name for cluster assignment in *phrases_df* (default
+        ``'cluster_id'``).
+
+    Returns
+    -------
+    pd.DataFrame
+        Index = year (int), columns = cluster_id (int), values = fraction of
+        documents in that year mentioning that cluster (float 0–1).
+    """
+    import pandas as pd
+
+    if kind not in ("concern", "benefit"):
+        raise ValueError(f"kind must be 'concern' or 'benefit', got {kind!r}")
+
+    # Join phrases → chunks to get document identifier and year
+    needed_cols = [c for c in [doc_col, year_col, tech_col, "chunk_id"] if c in chunks_df.columns]
+    merged = phrases_df[[cluster_col, "chunk_id"]].merge(
+        chunks_df[needed_cols], on="chunk_id", how="left"
+    )
+
+    # Optional technology filter
+    if tech_filter is not None and tech_col in merged.columns:
+        merged = merged[merged[tech_col] == tech_filter]
+
+    merged = merged.dropna(subset=[year_col, cluster_col, doc_col])
+    merged[year_col] = merged[year_col].astype(int)
+    merged[cluster_col] = merged[cluster_col].astype(int)
+
+    if merged.empty:
+        return pd.DataFrame()
+
+    # --- Document-level binary presence per (doc, cluster) ---
+    # One row per unique (year, doc, cluster) — binary: doc mentions cluster
+    doc_cluster = (
+        merged[[year_col, doc_col, cluster_col]]
+        .drop_duplicates()
+    )
+
+    # Total documents per year (denominator)
+    docs_per_year = (
+        chunks_df.copy()
+        .pipe(lambda df: df[df[tech_col] == tech_filter] if tech_filter and tech_col in df.columns else df)
+        .dropna(subset=[year_col, doc_col])
+        .assign(**{year_col: lambda df: df[year_col].astype(int)})
+        [[year_col, doc_col]]
+        .drop_duplicates()
+        .groupby(year_col)[doc_col]
+        .count()
+        .rename("n_docs")
+    )
+
+    # Count documents per (year, cluster) that mention cluster
+    docs_mentioning = (
+        doc_cluster
+        .groupby([year_col, cluster_col])[doc_col]
+        .count()
+        .reset_index()
+        .rename(columns={doc_col: "n_docs_mentioning"})
+    )
+
+    # Pivot: rows = year, cols = cluster_id
+    pivot = docs_mentioning.pivot(index=year_col, columns=cluster_col, values="n_docs_mentioning")
+
+    # Normalise each year by total docs in that year
+    pivot = pivot.div(docs_per_year, axis=0).fillna(0.0)
+    pivot.index.name = "year"
+    pivot.columns.name = None
+
+    return pivot
+
+
+# ---------------------------------------------------------------------------
 # Prompt sensitivity analysis (CIP-0008)
 # ---------------------------------------------------------------------------
 

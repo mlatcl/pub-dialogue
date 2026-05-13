@@ -96,6 +96,7 @@ from pub_dialogue.address import (  # noqa: F401
     run_sensitivity,
     _volume_table,
     _top_clusters,
+    temporal_cluster_frequency,
     EXTRACTION_PROMPT_B,
     EXTRACTION_PROMPT_C,
     BENEFIT_EXTRACTION_PROMPT_B,

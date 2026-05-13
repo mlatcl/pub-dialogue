@@ -367,3 +367,81 @@ class TestRunPromptSensitivity:
         client = self._make_client(["x"])
         with pytest.raises(ValueError, match="kind must be"):
             address.run_prompt_sensitivity(chunks=chunks, kind="invalid", client=client)
+
+
+class TestTemporalClusterFrequency:
+    """Unit tests for temporal_cluster_frequency (CIP-0009 Approach B)."""
+
+    def _make_test_data(self):
+        """Create minimal phrases_df and chunks_df for testing."""
+        chunks_df = pd.DataFrame({
+            "chunk_id": [f"c{i}" for i in range(6)],
+            "source_file": ["doc_a.pdf", "doc_a.pdf", "doc_b.pdf",
+                            "doc_c.pdf", "doc_c.pdf", "doc_d.pdf"],
+            "year": [2021, 2021, 2021, 2022, 2022, 2022],
+            "technology_meta": ["AI", "AI", "AI", "AI", "AI", "Other"],
+        })
+        phrases_df = pd.DataFrame({
+            "chunk_id": ["c0", "c1", "c2", "c3", "c4"],
+            "cluster_id": [0, 1, 0, 0, 1],
+        })
+        return phrases_df, chunks_df
+
+    def test_returns_dataframe(self):
+        phrases_df, chunks_df = self._make_test_data()
+        result = address.temporal_cluster_frequency(phrases_df, chunks_df, kind="concern")
+        assert isinstance(result, pd.DataFrame)
+
+    def test_index_is_year(self):
+        phrases_df, chunks_df = self._make_test_data()
+        result = address.temporal_cluster_frequency(
+            phrases_df, chunks_df, kind="concern", tech_filter="AI"
+        )
+        assert set(result.index) == {2021, 2022}
+
+    def test_values_are_fractions(self):
+        """All values must be in [0, 1]."""
+        phrases_df, chunks_df = self._make_test_data()
+        result = address.temporal_cluster_frequency(
+            phrases_df, chunks_df, kind="concern", tech_filter="AI"
+        )
+        assert (result.values >= 0).all()
+        assert (result.values <= 1).all()
+
+    def test_document_level_binary(self):
+        """doc_a.pdf has cluster 0 in c0 and c1 — should be counted once.
+
+        In 2021 with tech_filter='AI': AI docs are doc_a.pdf and doc_b.pdf
+        (2 distinct documents).  Both mention cluster 0 (doc_a via c0,
+        doc_b via c2) → fraction = 2/2 = 1.0.
+        Only doc_a mentions cluster 1 → fraction = 1/2 = 0.5.
+        """
+        phrases_df, chunks_df = self._make_test_data()
+        result = address.temporal_cluster_frequency(
+            phrases_df, chunks_df, kind="concern", tech_filter="AI"
+        )
+        assert abs(result.loc[2021, 0] - 1.0) < 1e-6, "both AI docs in 2021 mention cluster 0"
+        assert abs(result.loc[2021, 1] - 0.5) < 1e-6, "only doc_a mentions cluster 1"
+
+    def test_tech_filter_changes_denominator(self):
+        """tech_filter='AI' changes denominator to AI-only doc count.
+
+        In 2022 without filter: denominator = doc_c + doc_d = 2 docs,
+        so each cluster fraction = 0.5.
+        With filter 'AI': denominator = doc_c only = 1 doc,
+        so each cluster fraction = 1.0.
+        """
+        phrases_df, chunks_df = self._make_test_data()
+        result_ai = address.temporal_cluster_frequency(
+            phrases_df, chunks_df, kind="concern", tech_filter="AI"
+        )
+        result_all = address.temporal_cluster_frequency(
+            phrases_df, chunks_df, kind="concern", tech_filter=None
+        )
+        # With AI filter, denominator is 1 (doc_c only) → fractions are higher
+        assert result_ai.loc[2022, 0] > result_all.loc[2022, 0]
+
+    def test_invalid_kind_raises(self):
+        phrases_df, chunks_df = self._make_test_data()
+        with pytest.raises(ValueError, match="kind must be"):
+            address.temporal_cluster_frequency(phrases_df, chunks_df, kind="invalid")
