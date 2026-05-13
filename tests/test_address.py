@@ -274,6 +274,212 @@ class TestAddressConstants:
 
 
 # ===========================================================================
+# AddressStage pipeline methods (CIP-0010 Phase 3)
+# ===========================================================================
+
+class TestAddressStageClusterPhrases:
+    """Unit tests for AddressStage.cluster_phrases() — k-means, no LLM needed."""
+
+    def setup_method(self):
+        self.stage = address.AddressStage(
+            access=_make_access_stage(), n_concern_clusters=3
+        )
+        np.random.seed(42)
+        n = 30
+        self.phrases = pd.DataFrame({
+            "concern_id": range(n),
+            "concern": [f"phrase {i}" for i in range(n)],
+            "cluster_id": [np.nan] * n,
+            "technology": ["AI"] * n,
+            "year": [2020] * n,
+        })
+        self.embeddings = np.random.rand(n, 16).astype(np.float32)
+
+    def test_returns_dict_with_expected_keys(self, tmp_path):
+        result = self.stage.cluster_phrases(
+            self.phrases, self.embeddings, kind="concern",
+            output_folder=tmp_path, checkpoint_folder=tmp_path,
+        )
+        assert "phrases_df" in result
+        assert "centroids_normalized" in result
+        assert "soft_membership" in result
+        assert "assignments" in result
+        assert "embeddings_normalized" in result
+
+    def test_phrases_df_has_cluster_id(self, tmp_path):
+        result = self.stage.cluster_phrases(
+            self.phrases, self.embeddings, kind="concern",
+            output_folder=tmp_path, checkpoint_folder=tmp_path,
+        )
+        assert "cluster_id" in result["phrases_df"].columns
+        assert not result["phrases_df"]["cluster_id"].isna().any()
+
+    def test_cluster_ids_in_valid_range(self, tmp_path):
+        result = self.stage.cluster_phrases(
+            self.phrases, self.embeddings, kind="concern",
+            output_folder=tmp_path, checkpoint_folder=tmp_path,
+        )
+        cids = result["phrases_df"]["cluster_id"].astype(int)
+        assert cids.min() >= 0
+        assert cids.max() < self.stage.n_concern_clusters
+
+    def test_centroids_normalized_shape(self, tmp_path):
+        result = self.stage.cluster_phrases(
+            self.phrases, self.embeddings, kind="concern",
+            output_folder=tmp_path, checkpoint_folder=tmp_path,
+        )
+        n_clust, emb_dim = result["centroids_normalized"].shape
+        assert n_clust == self.stage.n_concern_clusters
+        assert emb_dim == 16
+
+    def test_soft_membership_shape(self, tmp_path):
+        result = self.stage.cluster_phrases(
+            self.phrases, self.embeddings, kind="concern",
+            output_folder=tmp_path, checkpoint_folder=tmp_path,
+        )
+        n_phrases, n_clust = result["soft_membership"].shape
+        assert n_phrases == len(self.phrases)
+        assert n_clust == self.stage.n_concern_clusters
+
+    def test_saves_csv_to_output_folder(self, tmp_path):
+        self.stage.cluster_phrases(
+            self.phrases, self.embeddings, kind="concern",
+            output_folder=tmp_path, checkpoint_folder=tmp_path,
+        )
+        assert (tmp_path / "extracted_concerns.csv").exists()
+
+
+class TestAddressStageLabelClusters:
+    """Unit tests for AddressStage.label_clusters() — LLM labelling with cache."""
+
+    def setup_method(self):
+        self.stage = address.AddressStage(
+            access=_make_access_stage(), n_concern_clusters=3
+        )
+        self.exemplars = {
+            0: {"exemplars": [{"concern": "privacy risk", "technology": "AI",
+                               "year": 2020, "similarity": 0.9}],
+                "is_cross_cutting": False, "size": 10, "entropy": 0.5,
+                "top_technologies": {"AI": 10}},
+            1: {"exemplars": [{"concern": "job displacement", "technology": "AI",
+                               "year": 2021, "similarity": 0.85}],
+                "is_cross_cutting": True, "size": 8, "entropy": 0.8,
+                "top_technologies": {"AI": 8}},
+            2: {"exemplars": [{"concern": "bias in algorithms", "technology": "AI",
+                               "year": 2020, "similarity": 0.88}],
+                "is_cross_cutting": False, "size": 12, "entropy": 0.4,
+                "top_technologies": {"AI": 12}},
+        }
+        self._mock_label = {"label": "Privacy Risks", "description": "Concerns about privacy.",
+                            "success": True}
+
+    def test_loads_from_cache_when_file_exists(self, tmp_path):
+        import json
+        cached = {str(i): self._mock_label for i in range(3)}
+        (tmp_path / "cluster_labels.json").write_text(json.dumps(cached))
+        result = self.stage.label_clusters(self.exemplars, "concern", tmp_path)
+        assert len(result) == 3
+        assert result["0"]["success"] is True
+
+    def test_calls_client_when_no_cache(self, tmp_path):
+        from unittest.mock import MagicMock
+        mock_client = MagicMock()
+        mock_client.complete.return_value = '{"label": "Privacy", "description": "...", "success": true}'
+        # Patch label_cluster to avoid real LLM calls
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr(address, "label_cluster",
+                       lambda *a, **kw: self._mock_label)
+            result = self.stage.label_clusters(
+                self.exemplars, "concern", tmp_path, client=mock_client
+            )
+        assert len(result) == 3
+
+    def test_returns_dict_with_string_keys(self, tmp_path):
+        import json
+        cached = {str(i): self._mock_label for i in range(3)}
+        (tmp_path / "cluster_labels.json").write_text(json.dumps(cached))
+        result = self.stage.label_clusters(self.exemplars, "concern", tmp_path)
+        assert all(isinstance(k, str) for k in result.keys())
+
+    def test_raises_on_low_success_rate(self, tmp_path):
+        import json
+        failed_label = {"label": "Fail", "description": "...", "success": False}
+        cached = {str(i): failed_label for i in range(3)}
+        (tmp_path / "cluster_labels.json").write_text(json.dumps(cached))
+        with pytest.raises(RuntimeError, match="success rate"):
+            self.stage.label_clusters(self.exemplars, "concern", tmp_path,
+                                      min_success_rate=0.9)
+
+
+class TestAddressStageAssignFramingLenses:
+    """Unit tests for AddressStage.assign_framing_lenses()."""
+
+    def setup_method(self):
+        self.stage = address.AddressStage(
+            access=_make_access_stage(), n_concern_clusters=3
+        )
+        self.exemplars = {
+            i: {"is_cross_cutting": False, "size": 10} for i in range(3)
+        }
+        self.labels = {
+            str(i): {"label": f"Cluster {i}", "description": "desc"} for i in range(3)
+        }
+        self._good_lenses = {
+            "framing_lenses": [
+                {"name": "Safety", "description": "Safety concerns",
+                 "suggested_clusters": [0, 1, 2]}
+            ]
+        }
+
+    def _make_mock_client(self):
+        import json
+        from unittest.mock import MagicMock
+        mc = MagicMock()
+        mc.complete.return_value = json.dumps(self._good_lenses)
+        return mc
+
+    def test_returns_dict(self, tmp_path):
+        result = self.stage.assign_framing_lenses(
+            self.exemplars, self.labels, 3, "concern", tmp_path,
+            client=self._make_mock_client()
+        )
+        assert isinstance(result, dict)
+
+    def test_all_clusters_covered(self, tmp_path):
+        result = self.stage.assign_framing_lenses(
+            self.exemplars, self.labels, 3, "concern", tmp_path,
+            client=self._make_mock_client()
+        )
+        covered = set()
+        for v in result.values():
+            covered.update(v["cluster_ids"])
+        assert covered >= {0, 1, 2}
+
+    def test_saves_json_to_output_folder(self, tmp_path):
+        self.stage.assign_framing_lenses(
+            self.exemplars, self.labels, 3, "concern", tmp_path,
+            client=self._make_mock_client()
+        )
+        assert (tmp_path / "framing_lens_mappings.json").exists()
+
+    def test_benefit_saves_benefit_json(self, tmp_path):
+        self.stage.assign_framing_lenses(
+            self.exemplars, self.labels, 3, "benefit", tmp_path,
+            client=self._make_mock_client()
+        )
+        assert (tmp_path / "benefit_framing_lens_mappings.json").exists()
+
+    def test_loads_from_cache_when_all_covered(self, tmp_path):
+        import json
+        cached = {"Safety": {"description": "desc", "cluster_ids": [0, 1, 2]}}
+        (tmp_path / "framing_lens_mappings.json").write_text(json.dumps(cached))
+        result = self.stage.assign_framing_lenses(
+            self.exemplars, self.labels, 3, "concern", tmp_path, client=None
+        )
+        assert result == cached
+
+
+# ===========================================================================
 # ExtractionResult dataclass
 # ===========================================================================
 

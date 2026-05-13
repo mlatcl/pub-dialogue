@@ -1,7 +1,7 @@
 ---
 id: "2026-05-13_cip0010-phase3-pipeline-methods"
 title: "CIP-0010 Phase 3: Add AddressStage pipeline methods (cluster, label, lenses)"
-status: "Ready"
+status: "Completed"
 priority: "Low"
 created: "2026-05-13"
 last_updated: "2026-05-13"
@@ -44,3 +44,8 @@ thinning out the clustering notebook cells.
 
 ### 2026-05-13
 Task created. Depends on Phase 2.
+
+### 2026-05-13 (implementation)
+Completed. Added `cluster_phrases`, `label_clusters`, `assign_framing_lenses` to `AddressStage`.
+14 new unit tests (all passing). `01a_clustering.ipynb` updated with stage object setup cell and
+method-call replacements for cells 21, 33, 35, 37, 43, 51, 53, 55. 327 tests passing.

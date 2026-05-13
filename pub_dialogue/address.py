@@ -342,6 +342,299 @@ class AddressStage:
         """
         return self._cluster_salience(phrases_df, "benefit_id")
 
+    # -------------------------------------------------------------------
+    # Pipeline methods: clustering, labelling, framing-lens assignment
+    # (CIP-0010 Phase 3)
+    # -------------------------------------------------------------------
+
+    def cluster_phrases(
+        self,
+        phrases_df: "pd.DataFrame",
+        embeddings: "np.ndarray",
+        kind: str,
+        output_folder: Optional[Path] = None,
+        checkpoint_folder: Optional[Path] = None,
+    ) -> dict:
+        """Run k-means clustering on phrase embeddings and persist artefacts.
+
+        Parameters
+        ----------
+        phrases_df: DataFrame of extracted phrases (concerns or benefits)
+        embeddings: numpy array of shape (n_phrases, embedding_dim)
+        kind:       ``'concern'`` or ``'benefit'``
+        output_folder:    where to write ``extracted_{kind}s.csv``
+        checkpoint_folder: where to write npy checkpoint files
+
+        Returns
+        -------
+        dict with keys:
+            phrases_df          — input DataFrame with ``cluster_id`` column added
+            assignments         — 1-D int array of cluster assignments
+            centroids_normalized — (n_clusters, dim) normalized centroid array
+            soft_membership     — (n_phrases, n_clusters) cosine-similarity matrix
+        """
+        from sklearn.cluster import KMeans
+        from sklearn.metrics.pairwise import cosine_similarity
+        from sklearn.preprocessing import normalize
+
+        n_clusters = (
+            self.n_concern_clusters if kind == "concern" else self.n_benefit_clusters
+        )
+        out = output_folder if output_folder is not None else self.access.output_folder
+        ckpt = checkpoint_folder if checkpoint_folder is not None else self.access.checkpoint_folder
+
+        emb_norm = normalize(embeddings)
+        kmeans = KMeans(
+            n_clusters=n_clusters,
+            random_state=self.random_seed,
+            n_init=10,
+            max_iter=300,
+        )
+        assignments = kmeans.fit_predict(emb_norm)
+        centroids_norm = normalize(kmeans.cluster_centers_)
+        soft_membership = cosine_similarity(emb_norm, centroids_norm)
+
+        phrases_df = phrases_df.copy()
+        phrases_df["cluster_id"] = assignments
+
+        # Persist
+        out.mkdir(parents=True, exist_ok=True)
+        ckpt.mkdir(parents=True, exist_ok=True)
+        kind_plural = f"{kind}s"
+        phrases_df.to_csv(out / f"extracted_{kind_plural}.csv", index=False)
+
+        suffix = "" if kind == "concern" else "_benefit"
+        np.save(ckpt / f"soft_membership{suffix}.npy", soft_membership)
+        np.save(ckpt / f"cluster_centroids{suffix}.npy", centroids_norm)
+
+        return {
+            "phrases_df": phrases_df,
+            "assignments": assignments,
+            "embeddings_normalized": emb_norm,
+            "centroids_normalized": centroids_norm,
+            "soft_membership": soft_membership,
+        }
+
+    def label_clusters(
+        self,
+        cluster_exemplars: dict,
+        kind: str,
+        output_folder: Path,
+        client=None,
+        min_success_rate: float = 0.90,
+    ) -> dict:
+        """Load cached cluster labels or generate them via the LLM.
+
+        Parameters
+        ----------
+        cluster_exemplars: dict mapping cluster_id (int) → exemplar data
+        kind:              ``'concern'`` or ``'benefit'``
+        output_folder:     directory that may contain ``cluster_labels.json``
+        client:            LLMClient instance (required when no cache exists)
+        min_success_rate:  raise ``RuntimeError`` if fewer than this fraction
+                           of labels were generated successfully
+
+        Returns
+        -------
+        cluster_labels_dict — ``{str(cluster_id): {"label": ..., "description": ..., "success": ...}}``
+        """
+        import time
+
+        suffix = "_benefit" if kind == "benefit" else ""
+        labels_file = output_folder / f"{'benefit_' if kind == 'benefit' else ''}cluster_labels.json"
+        n_clusters = len(cluster_exemplars)
+
+        cluster_labels_dict: Optional[dict] = None
+        if labels_file.exists():
+            with open(labels_file) as f:
+                cached = json.load(f)
+            if len(cached) == n_clusters:
+                cluster_labels_dict = cached
+
+        if cluster_labels_dict is None:
+            if client is None:
+                raise ValueError("client is required when no cached labels are available")
+            cluster_labels_dict = {}
+            failed_count = 0
+            for cluster_id, data in cluster_exemplars.items():
+                result = label_cluster(
+                    cluster_id, data["exemplars"], data["is_cross_cutting"],
+                    kind=kind, client=client,
+                )
+                cluster_labels_dict[str(cluster_id)] = result
+                if not result.get("success", False):
+                    failed_count += 1
+                time.sleep(0.3)
+
+            with open(labels_file, "w") as f:
+                json.dump(cluster_labels_dict, f, indent=2)
+
+        # Validate success rate
+        n_success = sum(1 for v in cluster_labels_dict.values() if v.get("success", False))
+        n_total = max(1, len(cluster_labels_dict))
+        success_rate = n_success / n_total
+        if success_rate < min_success_rate:
+            raise RuntimeError(
+                f"Cluster-label success rate ({success_rate:.1%}) below threshold "
+                f"({min_success_rate:.0%}) for kind={kind!r}. "
+                "Re-run cluster labelling or inspect failures."
+            )
+        return cluster_labels_dict
+
+    def assign_framing_lenses(
+        self,
+        cluster_exemplars: dict,
+        cluster_labels_dict: dict,
+        n_clusters: int,
+        kind: str,
+        output_folder: Path,
+        client=None,
+    ) -> dict:
+        """Generate framing-lens assignments via the LLM and persist to disk.
+
+        Includes retry logic for clusters missed by the initial LLM call, and
+        a fallback that assigns any still-uncovered clusters to the largest lens.
+
+        Parameters
+        ----------
+        cluster_exemplars:  dict mapping cluster_id → exemplar data
+        cluster_labels_dict: label dict from :meth:`label_clusters`
+        n_clusters:         total number of clusters (for coverage check)
+        kind:               ``'concern'`` or ``'benefit'``
+        output_folder:      where to write ``[benefit_]framing_lens_mappings.json``
+        client:             LLMClient instance
+
+        Returns
+        -------
+        framing_lens_mappings — ``{lens_name: {"description": ..., "cluster_ids": [...]}}``
+        """
+        # Load from cache if the mappings file already exists
+        prefix = "benefit_" if kind == "benefit" else ""
+        out_file = output_folder / f"{prefix}framing_lens_mappings.json"
+        if out_file.exists():
+            with open(out_file) as f:
+                cached = json.load(f)
+            covered = {cid for v in cached.values() for cid in v.get("cluster_ids", [])}
+            if covered >= set(range(n_clusters)):
+                return cached
+
+        # Build cluster summary text for the prompt
+        cluster_info = []
+        for cluster_id, data in cluster_exemplars.items():
+            cid = int(cluster_id)
+            label = cluster_labels_dict.get(str(cid), {}).get("label", f"Cluster {cid}")
+            desc = cluster_labels_dict.get(str(cid), {}).get("description", "")
+            ctype = "cross-cutting" if data.get("is_cross_cutting") else "tech-specific"
+            cluster_info.append(
+                f"{cid}. {label} ({ctype}, n={data.get('size', 0)}): {desc}"
+            )
+        cluster_summary_text = "\n".join(cluster_info)
+
+        kind_label = "concern" if kind == "concern" else "benefit"
+        lens_prompt = (
+            f"Analyze these {n_clusters} {kind_label} clusters from UK public dialogue reports.\n\n"
+            f"Clusters:\n{cluster_summary_text}\n\n"
+            f"Group these clusters into 8-12 higher-level FRAMING LENSES that capture how "
+            f"publics frame their {kind_label}s.\n\n"
+            "For each lens provide:\n"
+            "1. Name (2-4 words)\n2. Description (1 sentence)\n"
+            "3. List of cluster IDs that belong to this lens\n\n"
+            "A cluster can belong to multiple lenses if appropriate.\n"
+            "Ensure all clusters are assigned to at least one lens.\n\n"
+            'Return JSON:\n{"framing_lenses": ['
+            '{"name": "...", "description": "...", "suggested_clusters": [0, 1, 2...]}, ...]}'
+        )
+
+        def _parse_lenses(raw: str) -> dict:
+            if "```" in raw:
+                for part in raw.split("```"):
+                    if part.startswith("json"):
+                        raw = part[4:].strip()
+                        break
+                    elif part.strip().startswith("{"):
+                        raw = part.strip()
+                        break
+            return json.loads(raw)
+
+        try:
+            content = client.complete(
+                messages=[
+                    {"role": "system", "content":
+                     "Expert in public engagement and discourse analysis. Return only valid JSON."},
+                    {"role": "user", "content": lens_prompt},
+                ],
+                max_completion_tokens=8000,
+            )
+            suggested_lenses = _parse_lenses(content)
+
+            # Retry for clusters the LLM missed
+            assigned = {
+                cid for lens in suggested_lenses["framing_lenses"]
+                for cid in lens["suggested_clusters"]
+            }
+            uncovered = sorted(set(range(n_clusters)) - assigned)
+            if uncovered:
+                existing_names = [l["name"] for l in suggested_lenses["framing_lenses"]]
+                uncovered_info = [
+                    line for line in cluster_info
+                    if int(line.split(".")[0]) in set(uncovered)
+                ]
+                retry_prompt = (
+                    f"Some {kind_label} clusters were not assigned to any framing lens.\n"
+                    f"Existing lens names: {existing_names}\n\n"
+                    f"Unassigned clusters:\n" + "\n".join(uncovered_info) + "\n\n"
+                    "For each unassigned cluster, add its ID to the most appropriate "
+                    "existing lens.\nReturn JSON listing only lenses that need updating:\n"
+                    '{"framing_lenses": [{"name": "<existing name>", "description": "...", '
+                    '"suggested_clusters": [<new ids only>]}, ...]}'
+                )
+                retry_raw = client.complete(
+                    messages=[
+                        {"role": "system", "content":
+                         "Expert in public engagement analysis. Return only valid JSON."},
+                        {"role": "user", "content": retry_prompt},
+                    ],
+                    max_completion_tokens=4000,
+                )
+                retry_lenses = _parse_lenses(retry_raw)
+                by_name = {l["name"]: l for l in suggested_lenses["framing_lenses"]}
+                for rl in retry_lenses["framing_lenses"]:
+                    if rl["name"] in by_name:
+                        by_name[rl["name"]]["suggested_clusters"].extend(rl["suggested_clusters"])
+                    else:
+                        suggested_lenses["framing_lenses"].append(rl)
+
+            # Fallback: assign any still-uncovered to the largest lens
+            assigned = {
+                cid for lens in suggested_lenses["framing_lenses"]
+                for cid in lens["suggested_clusters"]
+            }
+            still_uncovered = sorted(set(range(n_clusters)) - assigned)
+            if still_uncovered:
+                fallback = max(
+                    suggested_lenses["framing_lenses"],
+                    key=lambda l: len(l["suggested_clusters"]),
+                )
+                fallback["suggested_clusters"].extend(still_uncovered)
+
+        except Exception as exc:
+            logger.error("Error generating framing lenses for kind=%r: %s", kind, exc)
+            suggested_lenses = {"framing_lenses": []}
+
+        # Build mappings dict and persist
+        mappings: dict = {}
+        for lens in suggested_lenses["framing_lenses"]:
+            mappings[lens["name"]] = {
+                "description": lens["description"],
+                "cluster_ids": lens["suggested_clusters"],
+            }
+
+        out_file = output_folder / f"{prefix}framing_lens_mappings.json"
+        with open(out_file, "w") as f:
+            json.dump(mappings, f, indent=2)
+
+        return mappings
+
 DEFAULT_TECH_WORDS: List[str] = [
     "ai", "artificial intelligence", "nuclear", "genetic", "nano",
     "genome", "robot", "drone", "quantum", "gm", "embryo", "stem cell",
