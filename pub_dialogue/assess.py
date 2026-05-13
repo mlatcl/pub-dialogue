@@ -355,7 +355,7 @@ def write_extraction_diagnostics(
         for r in results
         if r.error is not None
     ]
-    pd.DataFrame(error_rows).to_csv(
+    pd.DataFrame(error_rows, columns=["chunk_id", "track", "error"]).to_csv(
         output_folder / f"extraction_errors_{kind}.csv", index=False
     )
 

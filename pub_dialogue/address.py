@@ -32,14 +32,78 @@ Constants:
 
 from __future__ import annotations
 
+import collections
 import json
+import logging
+import random
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger("pub_dialogue.address")
+
+
+# ---------------------------------------------------------------------------
+# Proactive rate limiter
+# ---------------------------------------------------------------------------
+
+class _SlidingWindowLimiter:
+    """Thread-safe sliding-window rate limiter.
+
+    Blocks callers as needed so that no more than *max_calls* requests are
+    issued within any rolling *window_seconds*-second window.
+    """
+
+    def __init__(self, max_calls: int = 450, window_seconds: float = 60.0) -> None:
+        self._max = max_calls
+        self._window = window_seconds
+        self._times: collections.deque = collections.deque()
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        """Block until a request slot is available, then claim it."""
+        while True:
+            with self._lock:
+                now = time.time()
+                # Expire timestamps outside the rolling window
+                while self._times and now - self._times[0] > self._window:
+                    self._times.popleft()
+                if len(self._times) < self._max:
+                    self._times.append(now)
+                    return
+                # Wait until the oldest token falls out of the window
+                sleep_for = self._window - (now - self._times[0]) + 0.05
+            time.sleep(sleep_for)
+
+
+_rate_limiter: Optional[_SlidingWindowLimiter] = None
+
+
+def configure_rate_limiter(calls_per_minute: int = 450) -> None:
+    """Install a module-level rate limiter applied to every LLM call.
+
+    Call this once after creating the LLMClient, before any extraction:
+
+    .. code-block:: python
+
+        import pub_dialogue.utils as du
+        du.configure_rate_limiter(450)   # stay under 500 RPM hard limit
+
+    Pass ``calls_per_minute=0`` to disable the limiter.
+    """
+    global _rate_limiter
+    if calls_per_minute <= 0:
+        _rate_limiter = None
+        logger.info("Rate limiter disabled.")
+    else:
+        _rate_limiter = _SlidingWindowLimiter(max_calls=calls_per_minute)
+        logger.info("Rate limiter configured: %d calls/min.", calls_per_minute)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -141,12 +205,64 @@ class ExtractionResult:
 # Phrase extraction
 # ---------------------------------------------------------------------------
 
+def _complete_with_retry(client, messages: list, max_tokens: int, max_retries: int = 5) -> str:
+    """Call client.complete() with exponential backoff on RateLimitError.
+
+    Parameters
+    ----------
+    client:
+        :class:`~pub_dialogue.client.LLMClient` instance.
+    messages:
+        OpenAI-style message list.
+    max_tokens:
+        Passed through to ``client.complete``.
+    max_retries:
+        Maximum number of retry attempts after the first failure.
+
+    Returns
+    -------
+    str
+        The assistant reply text.
+
+    Raises
+    ------
+    litellm.RateLimitError
+        If all retries are exhausted.
+    Any other exception
+        Propagated immediately without retrying.
+    """
+    import litellm
+
+    delay = 1.0
+    for attempt in range(max_retries + 1):
+        # Proactive throttle: block until a rate-limit slot is available
+        if _rate_limiter is not None:
+            _rate_limiter.wait()
+        try:
+            return client.complete(messages, max_tokens=max_tokens)
+        except litellm.RateLimitError as exc:
+            if attempt == max_retries:
+                logger.warning(
+                    "Rate limit: all %d retries exhausted — giving up.", max_retries
+                )
+                raise
+            # Full jitter: spread retries across 0–delay so workers don't pile up
+            sleep_for = random.uniform(0, delay)
+            logger.debug(
+                "Rate limit: attempt %d/%d, sleeping %.1fs before retry.",
+                attempt + 1, max_retries, sleep_for,
+            )
+            time.sleep(sleep_for)
+            delay = min(delay * 2, 60.0)
+
+
 def extract_phrases(
     row_tuple,
     kind: str,
     client,
     tech_words: Optional[List[str]] = None,
     max_tokens: int = 500,
+    max_retries: int = 5,
 ) -> ExtractionResult:
     """Extract decontextualised concern or benefit phrases from one paragraph.
 
@@ -163,6 +279,9 @@ def extract_phrases(
         Substring filter list. Defaults to DEFAULT_TECH_WORDS.
     max_tokens:
         Maximum completion tokens.
+    max_retries:
+        Maximum retries on ``RateLimitError`` with exponential backoff.
+        Defaults to 5.  Set to 0 to disable retry.
 
     Returns
     -------
@@ -189,7 +308,7 @@ def extract_phrases(
         {"role": "user", "content": prompt_template.format(text=str(row["text"])[:2000])},
     ]
     try:
-        content = client.complete(messages, max_tokens=max_tokens)
+        content = _complete_with_retry(client, messages, max_tokens, max_retries)
         if content is None:
             return ExtractionResult(chunk_id=chunk_id, sentinel_returned=True)
 
@@ -230,6 +349,7 @@ def extract_phrases(
         )
 
     except Exception as exc:
+        logger.warning("chunk %s: extraction failed — %s: %s", chunk_id, type(exc).__name__, exc)
         return ExtractionResult(
             chunk_id=chunk_id,
             error=f"{type(exc).__name__}: {exc}",

@@ -68,6 +68,86 @@ class TestExtractionResult:
 
 
 # ===========================================================================
+# _complete_with_retry
+# ===========================================================================
+
+class TestCompleteWithRetry:
+    """Tests for the retry helper that wraps client.complete()."""
+
+    def _make_client(self, side_effects):
+        """Return a mock client whose complete() raises/returns the given side_effects."""
+        import unittest.mock as mock
+        client = mock.MagicMock()
+        client.complete.side_effect = side_effects
+        return client
+
+    def test_success_on_first_try(self):
+        import unittest.mock as mock
+        import litellm
+        client = self._make_client(["hello"])
+        result = address._complete_with_retry(client, [], max_tokens=10, max_retries=3)
+        assert result == "hello"
+        assert client.complete.call_count == 1
+
+    def test_retries_on_rate_limit_then_succeeds(self):
+        import unittest.mock as mock
+        import litellm
+        rate_exc = litellm.RateLimitError("rate limited", llm_provider="openai", model="gpt-4o-mini")
+        client = self._make_client([rate_exc, rate_exc, "ok"])
+        with mock.patch("time.sleep"):
+            result = address._complete_with_retry(client, [], max_tokens=10, max_retries=5)
+        assert result == "ok"
+        assert client.complete.call_count == 3
+
+    def test_raises_after_max_retries_exhausted(self):
+        import unittest.mock as mock
+        import litellm
+        rate_exc = litellm.RateLimitError("rate limited", llm_provider="openai", model="gpt-4o-mini")
+        client = self._make_client([rate_exc] * 4)
+        with mock.patch("time.sleep"), pytest.raises(litellm.RateLimitError):
+            address._complete_with_retry(client, [], max_tokens=10, max_retries=3)
+        assert client.complete.call_count == 4  # 1 initial + 3 retries
+
+    def test_non_rate_limit_error_propagates_immediately(self):
+        import unittest.mock as mock
+        client = self._make_client([ValueError("bad input"), "should not reach"])
+        with mock.patch("time.sleep"), pytest.raises(ValueError):
+            address._complete_with_retry(client, [], max_tokens=10, max_retries=3)
+        assert client.complete.call_count == 1
+
+
+class TestExtractPhrasesRetry:
+    """Integration: extract_phrases surfaces retry behaviour via ExtractionResult."""
+
+    def _make_row(self, chunk_id="c0", text="The public worries about this."):
+        import pandas as pd
+        row = pd.Series({"chunk_id": chunk_id, "text": text})
+        return (0, row)
+
+    def test_rate_limit_then_success_returns_result(self):
+        import unittest.mock as mock
+        import litellm
+        rate_exc = litellm.RateLimitError("rate limited", llm_provider="openai", model="gpt-4o-mini")
+        client = mock.MagicMock()
+        client.complete.side_effect = [rate_exc, rate_exc, "Privacy concerns\nData misuse"]
+        with mock.patch("time.sleep"):
+            result = address.extract_phrases(self._make_row(), "concern", client, max_retries=5)
+        assert result.error is None
+        assert len(result.retained_phrases) > 0
+
+    def test_all_retries_exhausted_returns_error_result(self):
+        import unittest.mock as mock
+        import litellm
+        rate_exc = litellm.RateLimitError("rate limited", llm_provider="openai", model="gpt-4o-mini")
+        client = mock.MagicMock()
+        client.complete.side_effect = [rate_exc] * 4
+        with mock.patch("time.sleep"):
+            result = address.extract_phrases(self._make_row(), "concern", client, max_retries=3)
+        assert result.error is not None
+        assert "RateLimitError" in result.error
+
+
+# ===========================================================================
 # assign_window
 # ===========================================================================
 

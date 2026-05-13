@@ -85,6 +85,7 @@ from pub_dialogue.address import (  # noqa: F401
     DEFAULT_TECH_WORDS,
     _SENTINELS,
     ExtractionResult,
+    configure_rate_limiter,
     extract_phrases,
     get_embeddings_batch,
     label_cluster,
