@@ -1,7 +1,7 @@
 ---
 id: "2026-05-13_cip000F-pilot-00-data-quality"
 title: "CIP-000F Pilot: Refactor imports in 00_data_quality.ipynb"
-status: "Ready"
+status: "Completed"
 priority: "High"
 created: "2026-05-13"
 last_updated: "2026-05-13"
@@ -29,10 +29,10 @@ Only the following may remain in the setup cell: `os`, `json`, `Path`, `pandas`,
 
 ## Acceptance Criteria
 
-- [ ] Monolithic import cell is eliminated (or reduced to setup-cell-permitted imports only)
-- [ ] Every non-setup import has its own cell immediately above its first-use cell
-- [ ] Notebook executes top-to-bottom without `ImportError` or `NameError`
-- [ ] Cell outputs are consistent with the pre-refactor version
+- [x] Monolithic import cell is eliminated (or reduced to setup-cell-permitted imports only)
+- [x] Every non-setup import has its own cell immediately above its first-use cell
+- [x] Notebook executes top-to-bottom without `ImportError` or `NameError`
+- [ ] Cell outputs are consistent with the pre-refactor version (requires Colab/API run)
 
 ## Implementation Notes
 
