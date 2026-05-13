@@ -87,4 +87,6 @@ class LLMClient:
         import litellm  # lazy: not needed in pure-analysis notebooks
 
         resp = litellm.embedding(model=self.embedding_model, input=texts)
-        return [d.embedding for d in resp.data]
+        # litellm returns data items as plain dicts, not attribute-access objects
+        return [d["embedding"] if isinstance(d, dict) else d.embedding
+                for d in resp.data]
