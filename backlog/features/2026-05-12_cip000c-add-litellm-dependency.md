@@ -1,10 +1,10 @@
 ---
 id: "2026-05-12_cip000c-add-litellm-dependency"
 title: "Add litellm to pyproject.toml dependencies"
-status: "Proposed"
+status: "Completed"
 priority: "High"
 created: "2026-05-12"
-last_updated: "2026-05-12"
+last_updated: "2026-05-13"
 category: "features"
 related_cips: ["000C"]
 owner: ""

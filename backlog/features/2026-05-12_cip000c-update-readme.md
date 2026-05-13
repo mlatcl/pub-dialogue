@@ -1,10 +1,10 @@
 ---
 id: "2026-05-12_cip000c-update-readme"
 title: "Update README.md with supported LLM providers table"
-status: "Proposed"
+status: "Completed"
 priority: "Medium"
 created: "2026-05-12"
-last_updated: "2026-05-12"
+last_updated: "2026-05-13"
 category: "documentation"
 related_cips: ["000C"]
 owner: ""

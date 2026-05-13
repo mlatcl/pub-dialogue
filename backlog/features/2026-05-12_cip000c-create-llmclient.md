@@ -1,10 +1,10 @@
 ---
 id: "2026-05-12_cip000c-create-llmclient"
 title: "Create pub_dialogue/client.py with LLMClient wrapper"
-status: "Proposed"
+status: "Completed"
 priority: "High"
 created: "2026-05-12"
-last_updated: "2026-05-12"
+last_updated: "2026-05-13"
 category: "features"
 related_cips: ["000C"]
 owner: ""

@@ -3,7 +3,7 @@ author: "Neil Lawrence"
 created: "2026-05-12"
 id: "000C"
 last_updated: "2026-05-12"
-status: "Proposed"
+status: "Closed"
 compressed: false
 related_requirements: []
 related_cips: ["000B"]
@@ -22,7 +22,7 @@ title: "Multi-LLM provider support via litellm"
 - [x] Accepted - Approved, ready to start work
 - [x] In Progress - Actively being implemented
 - [x] Implemented - Work complete, awaiting verification
-- [ ] Closed - Verified and complete
+- [x] Closed - Verified and complete
 
 ## Summary
 
