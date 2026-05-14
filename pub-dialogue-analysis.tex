@@ -1,0 +1,760 @@
+% pub-dialogue-analysis.tex
+%
+% Analysis write-up: Methods and Results (v19 canonical run)
+% Based on 2026-05-dialogue-results-sketch.tex
+%
+% NOTEBOOK CROSS-REFERENCES
+% =========================
+% Each Methods and Results section below has a comment indicating which
+% notebook(s) implement or visualise that section.
+%
+% Notebook index:
+%   00_data_quality.ipynb    — Assess-phase quality checks (question-agnostic)
+%   01_processing.ipynb      — Full pipeline: ingest → chunk → extract → embed
+%   01a_clustering.ipynb     — KMeans clustering, labelling, framing lenses
+%   02_shared_structure.ipynb — R1: shared cross-cutting grammar
+%   03_ai_distinctiveness.ipynb — R2: AI vs non-AI distinctiveness
+%   04_temporal_dynamics.ipynb  — R3: temporal dynamics of AI concerns
+%   05_robustness.ipynb         — M6: validation, k-sensitivity, prompt sensitivity
+%
+
+\textbf{Paper sketch: Methods and Results (v19)}
+
+All numbers in this document come from the v19 run outputs
+in~public\_dialogue\_analysis\_outputs-8.zip~(n=7,671 chunks). Where a
+previous draft is referenced, it is for comparison only --- the analytic
+claims rest on v19.
+
+\textbf{Methods}
+
+% ─────────────────────────────────────────────────────────────────────────────
+% M1. CORPUS
+% Notebook: 01_processing.ipynb — §Purpose and §Corpus (opening markdown cell)
+%           00_data_quality.ipynb — corpus-level counts and technology breakdown
+% ─────────────────────────────────────────────────────────────────────────────
+\textbf{M1. Corpus}
+
+\begin{itemize}
+\item
+  \textbf{66 UK public dialogue reports}~on emerging
+  technologies,~\textbf{2004--2025}.
+\item
+  \textbf{11 technology categories}, with metadata mapping each document
+  to a primary technology and publication year.
+\item
+  \textbf{Heavy AI weighting}: 41 of 66 documents are AI dialogues,
+  reflecting recent commissioning patterns. Smaller corpora for genetic
+  technologies (7 documents), gene editing (4), nanotechnology (4),
+  nuclear (3), GM (2). One document each for carbon capture, drones,
+  geoengineering, neuraltech, quantum.
+\item
+  \textbf{Year coverage is uneven}: substantial document gaps in
+  2005--2006, 2011--2014, and 2020 (the latter driven by COVID-related
+  interruption of public-dialogue commissioning). These gaps are
+  reported transparently in the temporal analysis.
+\item
+  Corpus is imbalanced; smaller technology corpora have limited
+  representation. Implications for analysis are discussed in
+  Limitations.
+\end{itemize}
+
+\textbf{Table for Methods}: documents and chunks per technology, with
+year ranges, drawn
+from~paragraph\_chunks.csv~and~paragraph\_chunks\_per\_document.csv.
+
+% ─────────────────────────────────────────────────────────────────────────────
+% M2. SEGMENTATION
+% Notebook: 01_processing.ipynb — §SECTION 1: Data ingestion and preprocessing
+%           (cells 22–24: hybrid chunking, three-case strategy, chunk statistics)
+%           00_data_quality.ipynb — contamination check, chunk-quality diagnostic
+% ─────────────────────────────────────────────────────────────────────────────
+\textbf{M2. Segmentation}
+
+PDF text extracted via PyMuPDF. The chunker uses a three-case hybrid
+strategy:
+
+\begin{itemize}
+\item
+  \textbf{Case 1 --- paragraph segmentation alone (n=8 documents)}:
+  paragraph-level splitting (on double newlines) produces ≥3 substantive
+  paragraphs AND no paragraph exceeds the 500-word cap. All chunks are
+  paragraphs as the author wrote them.
+\item
+  \textbf{Case 2 --- paragraphs with internal sentence-splitting (n=43
+  documents)}: paragraph splitting produces enough substantive
+  paragraphs but at least one would exceed the 500-word cap. Well-sized
+  paragraphs are kept as-is; only the oversized paragraphs are split at
+  sentence boundaries into sub-chunks of approximately 300 words. The
+  author's paragraph boundaries are preserved everywhere they exist. (Of
+  these 43, four documents are an extreme case in
+  which~\emph{every}~paragraph is oversized --- primarily long-form
+  survey reports.)
+\item
+  \textbf{Case 3 --- full sentence-fallback (n=15 documents)}: paragraph
+  splitting produces fewer than 3 substantive paragraphs, indicating the
+  PDF lacks paragraph break encoding that PyMuPDF can extract. The whole
+  document is sentence-split and repacked into \textasciitilde300-word
+  chunks. These are predominantly recent UK AI policy reports produced
+  from HTML originals (e.g., Ada Lovelace Institute briefings, ONS
+  surveys, BritainThinks/CDEI tracker reports), plus the 2004 Royal
+  Society Nanotechnology report.
+\end{itemize}
+
+Each chunk records which method produced it via
+the~chunking\_method~column (paragraph,~sentence\_split,
+or~sentence\_fallback).
+
+\textbf{Filters}: chunks below 40 words or 80 characters are dropped.
+Chunks above 500 words are split at sentence boundaries before reaching
+this filter, so only 5 chunks (0.07\% of corpus) have hit the truncation
+cap as a residual safety net.
+
+\textbf{Final corpus}: 7,671 chunks across 66 documents. Of
+these,~\textbf{5,285 (69\%) are paragraph segments}, 1,675 (22\%) are
+sentence-split sub-chunks from oversized paragraphs in otherwise
+well-chunked documents, and 711 (9\%) come from full sentence-fallback.
+Mean chunk length is 173 words; median is 138 words.
+
+\textbf{Diagnostic note}: 832 of 7,671 chunks (10.8\%) are flagged by an
+automated diagnostic as likely-bibliography (134) or likely-survey-table
+(723) fragments. LLM extraction generally returns NO\_CONCERN for these,
+limiting their distortive effect on findings.
+
+% ─────────────────────────────────────────────────────────────────────────────
+% M3. PHRASE EXTRACTION
+% Notebook: 01_processing.ipynb — §Concern extraction (cells 30–36)
+%                                  §SECTION 3B: Benefits (cells 44–50)
+%           The word-boundary regex post-filter is in pub_dialogue/address.py
+% ─────────────────────────────────────────────────────────────────────────────
+\textbf{M3. Phrase extraction}
+
+\begin{itemize}
+\item
+  Two parallel pipelines:~\textbf{concerns}~and~\textbf{benefits}.
+\item
+  LLM (gpt-5-mini) prompted to extract 1--3 decontextualised concern (or
+  benefit) phrases per chunk, removing technology-specific language to
+  enable cross-technology comparison.
+\item
+  Word-boundary regex post-filter to catch phrases retaining
+  technology-specific terms.
+\item
+  \textbf{Output}: 17,596 concern phrases from 6,323 chunks (82.4\%
+  chunk yield); 18,346 benefit phrases from 6,910 chunks (90.1\% chunk
+  yield).
+\item
+  \textbf{Coverage}: 65 of 66 documents produced concerns; 65 of 66
+  produced benefits. The single document producing neither
+  (2009\_FSA\_GM\_Food.pdf) is a 1-chunk fragment.
+\item
+  \textbf{AI-vs-non-AI split}: of 17,596 concern phrases, AI contributes
+  6,955 (39.5\%) and non-AI technologies contribute 10,641 (60.5\%).
+\end{itemize}
+
+\textbf{Reflexive note}: extraction frames "concerns" and "benefits" as
+analytic categories. The choice shapes what surfaces. Sensitivity to
+this choice is tested in M6.
+
+% ─────────────────────────────────────────────────────────────────────────────
+% M4. EMBEDDING, CLUSTERING, FRAMING LENSES
+% Notebook: 01a_clustering.ipynb — §SECTION 3/4/5 (concerns) and 3B/4B/5B (benefits)
+%   - KMeans at k=75 implemented in §SECTION 3 (cells 19–25)
+%   - Cluster labelling (LLM, without technology metadata) in §SECTION 4 (cells 31–33)
+%   - Framing lens grouping in §SECTION 5 (cells 37–41)
+%   - k-sensitivity (k=60 and k=90) in 05_robustness.ipynb §SECTION 10/10B
+% ─────────────────────────────────────────────────────────────────────────────
+\textbf{M4. Embedding, clustering, framing lenses}
+
+\begin{itemize}
+\item
+  Phrases embedded with~text-embedding-3-large; L2-normalised.
+\item
+  k-means clustering at k=75 (sensitivity tested at k=60 and k=90).
+\item
+  Each cluster characterised by size, technology distribution, and
+  normalised entropy as a proxy for cross-cutting-ness.
+\item
+  \textbf{Cross-cutting threshold}: normalised entropy ≥ 0.5.
+\item
+  LLM-assigned cluster labels (without access to source-technology
+  metadata, to avoid labelling contamination).
+\item
+  Clusters grouped into~\textbf{10 framing lenses for
+  concerns}~and~\textbf{10 framing lenses for benefits}~by a separate
+  LLM step. Lenses are conceptual organisations of the cluster space;
+  their empirical validity is tested via dendrogram analysis (see M6).
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+% M5. COMPARISON METRICS
+% Notebook: 03_ai_distinctiveness.ipynb
+%   - Technology-weighted baseline: cells 2–8
+%   - Document-weighted baseline (diagnostic): cell 4
+%   - Lens-level and cluster-level difference calculations: cells 6–16
+% ─────────────────────────────────────────────────────────────────────────────
+\textbf{M5. Comparison metrics}
+
+\begin{itemize}
+\item
+  \textbf{Two baseline constructions}~for AI-vs-non-AI comparison:
+
+  \begin{itemize}
+  \item
+    \emph{Technology-weighted}: each non-AI technology contributes
+    equally.
+  \item
+    \emph{Document-weighted}: non-AI phrases pooled, weighted by their
+    natural document-volume distribution.
+  \end{itemize}
+\item
+  Comparing both baselines is a robustness check: findings that hold
+  under both are not artefacts of weighting choice.
+\item
+  \textbf{Distinctiveness measured at two levels}: cluster-level
+  (per-cluster AI−non-AI share difference) and lens-level (per-lens
+  difference).
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+% M6. VALIDATION AND SENSITIVITY
+% Notebook: 05_robustness.ipynb
+%   (a) Human inter-rater validation: cell 4 (stratified sample generation)
+%   (b) Prompt sensitivity: §SECTION 10C (cell 31) — V0/V1/V3 variants
+%   (c) Lens-scheme dendrogram: 02_shared_structure.ipynb cells 4/18
+%                               (ARI computed there; reported here)
+%   (d) k-sensitivity: 05_robustness.ipynb §SECTION 10/10B (cells 16–20, 30)
+% ─────────────────────────────────────────────────────────────────────────────
+\textbf{M6. Validation and sensitivity}
+
+Four validation strands:
+
+\textbf{(a) Human inter-rater validation}~on a stratified random sample
+of 50 paragraphs (expanded in final canonical run pending). Cohen's κ on
+the binary "concern present" decision = 0.84 (almost-perfect agreement
+on the Landis--Koch scale). 92\% raw agreement.~\textbf{Asymmetric
+error}: LLM prone to over-extraction (4 cases where the LLM extracted a
+concern but the human coder did not) and not under-extraction (0 cases
+where the human coder identified a concern the LLM missed). Procedural
+and methodological text occasionally mined for concerns it doesn't
+substantively contain.
+
+\textbf{(b) Prompt sensitivity}~on a stratified sample of 529 paragraphs
+under three prompt variants: V0 (baseline), V1 (broader "issues"
+framing), V3 (strict decontextualisation). The qualitative pattern of AI
+distinctiveness was preserved across all three variants. The Privacy
+effect's magnitude was sensitive to decontextualisation strictness (V0:
++21pp; V1: +16pp; V3: +9pp), suggesting V0 is an upper bound and V3 a
+lower bound on the precise pp difference.~\emph{(Note: the prompt
+sensitivity analysis was run against the v16 corpus; rerunning against
+v19 chunks is a candidate task before submission, though qualitative
+direction is expected to hold.)}
+
+\textbf{(c) Lens-scheme dendrogram validation}: hierarchical clustering
+of cluster centroids compared against LLM-derived framing lens scheme
+via Adjusted Rand Index. Concerns ARI = 0.185; benefits ARI = 0.150. The
+lens scheme is an interpretively useful organisation, not a strong
+empirical partition. Some lenses (notably Privacy/Consent \& Data)
+validate cleanly; others are looser conceptual groupings. Reported
+findings are hedged accordingly.
+
+\textbf{(d) k-sensitivity}~at k ∈ \{60, 75, 90\}. Headline findings
+preserved across all three.
+
+\textbf{Supplementary Table S1}: summary of validation, prompt
+sensitivity, and dendrogram results.
+
+% ─────────────────────────────────────────────────────────────────────────────
+% M7. NOTES ON DATA QUALITY
+% Notebook: 00_data_quality.ipynb — full corpus quality report
+%   - Contamination rate (bibliography/table flags): cells 11–15
+%   - Truncation elimination in v19: reported in 01_processing.ipynb cell 22–24
+%   - 2020 gap: visible in temporal plots in 04_temporal_dynamics.ipynb
+% ─────────────────────────────────────────────────────────────────────────────
+\textbf{M7. Notes on data quality}
+
+\begin{itemize}
+\item
+  \textbf{Truncation is effectively eliminated}~in v19 (5 chunks,
+  0.07\%, residual). Long paragraphs are sentence-split rather than
+  truncated; documents lacking paragraph breaks go through full
+  sentence-fallback. This is a substantive change from earlier pipeline
+  iterations.
+\item
+  \textbf{The 2020 year contains only 31 chunks}~(one fragmentary
+  document). COVID-related interruption of public-dialogue commissioning
+  is the likely cause. Worth noting in the temporal analysis.
+\item
+  \textbf{Chunk-quality contamination is 10.8\%}~(8\% of
+  likely-table-rows, 2\% likely-bibliography). The automated diagnostic
+  doesn't filter them; the LLM extraction step generally returns
+  NO\_CONCERN, so distortive effect on findings is limited.
+\end{itemize}
+
+\textbf{Results}
+
+\textbf{Headlines}~(all from v19 outputs):
+
+UK public dialogue reports repeatedly frame emerging technologies
+through procedural legitimacy: governance, accountability, transparency,
+public participation, trust, evidence, oversight, and distribution of
+benefits/harms. AI does not sit outside this shared structure but
+expresses it through informational concerns: misuse of personal data,
+data transparency, mistrust of institutional data handling, privacy and
+security, control over personal data, and loss of human oversight. AI
+benefits are framed less around environmental and physical-world
+transformation and more around service efficiency, data privacy and
+control, research quality, and personalisation. AI concern profiles stay
+broadly distributed over time, while the content mix shifts across
+commissioning periods.
+
+% ─────────────────────────────────────────────────────────────────────────────
+% R1. SHARED CROSS-CUTTING GRAMMAR OF LEGITIMACY
+% Notebook: 02_shared_structure.ipynb
+%   - Normalised entropy and cross-cutting threshold: cells 6–10
+%   - Stable-core scatterplot (Figure 1): cell 12
+%   - Top-20 cross-cutting clusters table (Table 1): cells 8–10
+%   - Benefit parallel (67% cross-cutting): cells 20–26
+%   - PCA embedding space visualisation: cells 14, 28
+% ─────────────────────────────────────────────────────────────────────────────
+\textbf{R1. Public concerns about emerging technology share a procedural
+grammar of legitimacy}
+
+\textbf{What it claims}: across the corpus, the dominant pattern is
+shared concern about how technology is governed, who participates in
+decisions, and how information flows. The substance of the technology
+matters less than the procedural questions surrounding it.
+
+\textbf{Empirical substantiation}:
+
+\begin{itemize}
+\item
+  Of 75 concern clusters,~\textbf{62 (83\%) are
+  cross-cutting}~(normalised entropy ≥ 0.5).
+\item
+  \textbf{Cross-cutting clusters hold 14,771 of 17,596 concern phrases
+  (83.9\%)}.
+\item
+  The 20 largest cross-cutting clusters together account for 40.1\% of
+  all concern phrases. They are about procedural and structural
+  concerns: misuse of personal data, distrust in governance and
+  oversight, lack of transparency in decision-making, lack of oversight
+  and accountability, uncertainty about future impacts, inadequate
+  testing and reliability, ethical and moral boundaries, insufficient
+  public engagement, safety risks, insufficient public participation in
+  decisions, unclear and inconsistent regulation, limited public
+  influence on research, short-term fragmented responses, erosion of
+  social connection, insufficient human oversight, insufficient support
+  and infrastructure.
+\item
+  The benefit side mirrors this:~\textbf{50 of 75 benefit clusters
+  (67\%) are cross-cutting}, holding 13,190 of 18,346 benefit phrases
+  (71.9\%). The benefit side has a higher proportion of tech-specific
+  clusters because medical and clinical benefits cluster around genetic
+  technologies, and service-efficiency benefits cluster around AI.
+\end{itemize}
+
+\textbf{Figure 1}: stable-core scatterplot of the 75 concern clusters
+(normalised entropy × frequency), with the cross-cutting +
+high-frequency quadrant labelled as the "shared core" and annotated with
+the top cluster labels.
+
+\includegraphics[width=6.26806in,height=4.41181in]{media/image1.png}
+
+\textbf{Table 1}: top 20 cross-cutting concern clusters by global
+prevalence.
+
+Top 20 cross-cutting concern clusters (normalised entropy ≥ 0.5), ranked
+by share of all concern phrases. These 20 clusters account for 40.1\% of
+all 17,596 extracted concern phrases across 65 documents and 11
+technologies.
+
+\begin{longtable}[]{@{}lllll@{}}
+\toprule
+\textbf{Cluster ID} & \textbf{Cluster label} & \textbf{N phrases} &
+\textbf{Share of all concerns} & \textbf{Tech entropy (raw)} \\
+\midrule
+\endhead
+50 & Misuse of personal data & 531 & 3.02\% & 0.78 \\
+62 & Distrust in governance and oversight & 512 & 2.91\% & 1.83 \\
+46 & Lack of transparency in decision-making & 502 & 2.85\% & 1.67 \\
+12 & Lack of oversight and accountability & 390 & 2.22\% & 1.55 \\
+43 & Uncertainty about future impacts & 375 & 2.13\% & 1.90 \\
+64 & Privacy and data security & 361 & 2.05\% & 0.91 \\
+65 & Inadequate testing and reliability & 358 & 2.03\% & 1.50 \\
+0 & Ethical and moral boundaries & 354 & 2.01\% & 1.16 \\
+4 & Insufficient public engagement & 328 & 1.86\% & 1.87 \\
+67 & Safety, security and environmental risks & 326 & 1.85\% & 1.95 \\
+3 & Insufficient public participation in decisions & 322 & 1.83\% &
+1.69 \\
+36 & Unclear and inconsistent regulation & 316 & 1.80\% & 1.79 \\
+25 & Inaccurate diagnosis and treatment & 314 & 1.78\% & 1.34 \\
+39 & Limited public influence on research & 312 & 1.77\% & 1.37 \\
+73 & Short-term, fragmented responses & 311 & 1.77\% & 1.95 \\
+14 & Erosion of social connection and identity & 301 & 1.71\% & 1.53 \\
+63 & Insufficient human oversight & 295 & 1.68\% & 1.24 \\
+52 & Insufficient support and infrastructure & 285 & 1.62\% & 1.71 \\
+16 & Unclear purpose and decision-making & 284 & 1.61\% & 1.73 \\
+54 & Unknown and unpredictable risks & 283 & 1.61\% & 1.69 \\
+\bottomrule
+\end{longtable}
+
+\textbf{Reading the finding}: this is a baseline finding, not a
+"discovery". UK public dialogues commissioned across two decades and 11
+technologies converge on shared procedural concerns. The 20 most
+prominent shared concerns are dominated by governance, oversight,
+accountability, transparency, public engagement, and harm-distribution
+themes. Two themes specifically about data (Misuse of personal data and
+Privacy and data security) are also in the top 20 --- this is the first
+signal of AI's informational footprint, but it sits~\emph{within}~a
+shared procedural grammar that runs across all 11 technologies. AI's
+distinctiveness, when it appears, expresses this grammar through
+informational concerns rather than departing from it.
+
+% ─────────────────────────────────────────────────────────────────────────────
+% R2. AI DISTINCTIVENESS: INFORMATIONAL AUTONOMY
+% Notebook: 03_ai_distinctiveness.ipynb
+%   - Technology-weighted lens comparison (radar): cells 2–8, 12
+%   - Document-weighted baseline diagnostic: cell 4
+%   - Cluster-level distinctiveness bar chart (Figure 3): cell 38
+%   - AI vs genetic technologies tech-specific clusters: cells 14–16
+%   - Benefit mirror (radar, Table 2 panel B): cells 20–30
+%   - Lens-level distinctiveness table (Table 2 panel B): cells 28–30
+% ─────────────────────────────────────────────────────────────────────────────
+\textbf{R2. AI public dialogue is distinctively focused on data and
+informational autonomy}
+
+\textbf{What it claims}: within the shared grammar, AI public dialogue
+carries a distinctive informational footprint. AI concerns are
+disproportionately about data, privacy, transparency, control over
+personal information, and the displacement of human oversight and
+contact. AI is correspondingly under-represented in concerns about
+physical safety, environmental harm, and embodied risk.
+
+\textbf{Empirical substantiation, three layers of evidence}:
+
+\textbf{(i) Lens-level distinctiveness}~(the headline numbers). AI
+is~\textbf{+16.4pp on the Privacy, Consent \& Data lens}~(21.9\% of AI
+concerns vs 5.6\% of non-AI under the technology-weighted baseline;
+identical direction at +16.7pp under the document-weighted baseline). AI
+is over-indexed on Security, Misuse \& Threats (+4.6pp tech-weighted),
+Equity \& Inclusion (+3.2pp), System Readiness \& Reliability (+2.6pp),
+and Transparency \& Communication (+2.3pp). AI is
+correspondingly~\textbf{under-indexed on Safety, Health \& Environment
+(-13.3pp tech-weighted, -15.3pp doc-weighted)}~and on Purpose, Benefits
+\& Economic Impact (-3.0pp), Public Participation \& Engagement
+(-2.7pp), and Governance \& Accountability (-2.6pp).~\textbf{Both
+baselines tell the same rank-order story; magnitudes differ slightly.}
+
+\textbf{(ii) Cluster-level distinctiveness}: the top 10 most
+AI-over-indexed concern clusters are dominated by data and informational
+themes.~\textbf{Seven of the top 10}~are explicitly about data or human
+oversight: Misuse of personal data (+5.0pp), Lack of data transparency
+(+3.0pp), Mistrust of government data handling (+2.8pp), Privacy and
+data security (+2.6pp), Loss of human oversight and contact (+2.1pp),
+Insufficient human oversight (+2.0pp), Loss of control over personal
+data (+1.9pp). The remaining three concern equity and accountability
+themes that the AI corpus emphasises (Discrimination and unequal
+impacts, Lack of oversight and accountability, Unequal public
+awareness). The least AI-distinctive clusters are about physical and
+environmental harm: Safety/security/environmental risks (-2.1pp),
+Environmental and ecosystem impacts (-2.1pp), Environmental
+contamination (-1.8pp), Unclear and inconsistent regulation (-1.5pp),
+Uncertain environmental and community impacts (-1.4pp).
+
+\textbf{(iii) Contrast with genetic technologies}. AI is one of two
+technologies in the corpus producing distinctive technology-specific
+cluster footprints; the other is genetic technologies. The two
+footprints occupy non-overlapping domains. AI's~\textbf{eight
+tech-specific clusters}~are all about informational autonomy or labour:
+Misuse of personal data, Privacy and data security, Lack of data
+transparency, Mistrust of government data handling, Loss of control over
+personal data, Loss of human oversight and contact, Unequal public
+awareness, and two on job displacement. Genetic
+technologies'~\textbf{three tech-specific clusters}~are all about
+embodied or research ethics: Ethical and moral boundaries, Emotional
+burden on families, and Ethical boundaries in research. Nuclear produces
+one tech-specific cluster, Long-term waste storage safety. No other
+technology produces tech-specific clusters of meaningful size. This
+contrast supports the interpretation that AI's distinctiveness
+is~\emph{substantively}~informational rather than reflecting whatever
+themes happen to surface in higher-volume technology corpora.
+
+\textbf{The mirror-image finding on benefits}: AI is over-indexed on
+Service Efficiency \& Personalisation (+13.9pp), Data Privacy \& Control
+(+7.4pp, the protective mirror to the concern about data misuse),
+Research Quality \& Ethics (+4.7pp), and Equity, Inclusion \& Wellbeing
+(+2.5pp). AI is~\textbf{under-indexed on Safety, Risk \& Environment
+(-15.1pp)}~and Economic \& Local Benefits (-5.7pp), Information \&
+Communication (-4.3pp). The benefit fingerprint mirrors the concern
+fingerprint: AI is associated with promised informational and
+service-efficiency gains, much less with environmental or physical-world
+benefits.
+
+\textbf{Robustness}: the qualitative direction of these findings holds
+across the three prompt variants tested (V0/V1/V3); the magnitude on
+Privacy varies by approximately a factor of two between V0 and V3. The
+headline interpretation --- AI public dialogue is distinctively about
+informational autonomy --- is robust; the precise pp difference is not.
+Both technology-weighted and document-weighted baselines produce the
+same rank order of distinctive lenses for both concerns and benefits.
+
+\textbf{Figure 2}: AI vs non-AI lens radar chart for concerns,
+visualising the asymmetry around Privacy/Consent/Data and the
+corresponding under-indexing on Safety/Health/Environment.
+
+\includegraphics[width=6.26806in,height=3.33958in]{media/image2.emf}
+
+\textbf{Figure 3}: AI vs non-AI cluster-level distinctiveness,
+horizontal bar chart showing the 20 most distinctive concern clusters
+(top 10 over-indexed and top 10 under-indexed) with AI share and non-AI
+share visible side by side.
+
+\includegraphics[width=6.26806in,height=5.07431in]{media/image3.png}
+
+\textbf{Table 2}: top AI-distinctive concern clusters and framing
+lenses.
+
+\textbf{Panel A --- cluster-level distinctiveness}. Top 10 most
+AI-over-indexed and top 10 most AI-under-indexed concern clusters,
+ranked by percentage-point difference between AI share and
+(technology-weighted) non-AI share.
+
+\begin{longtable}[]{@{}lllll@{}}
+\toprule
+\textbf{Cluster label} & \textbf{AI share (\%)} & \textbf{Non-AI share
+(\%)} & \textbf{Difference (pp)} & \textbf{Direction} \\
+\midrule
+\endhead
+Misuse of personal data & 5.9 & 0.9 & +5.0 & AI over-indexed \\
+Lack of data transparency & 3.2 & 0.2 & +3.0 & AI over-indexed \\
+Mistrust of government data handling & 2.9 & 0.1 & +2.8 & AI
+over-indexed \\
+Privacy and data security & 3.9 & 1.3 & +2.6 & AI over-indexed \\
+Loss of human oversight and contact & 2.1 & 0.0 & +2.1 & AI
+over-indexed \\
+Insufficient human oversight & 2.8 & 0.9 & +2.0 & AI over-indexed \\
+Loss of control over personal data & 2.0 & 0.1 & +1.9 & AI
+over-indexed \\
+Discrimination and unequal impacts & 2.2 & 0.7 & +1.4 & AI
+over-indexed \\
+Lack of oversight and accountability & 2.8 & 1.6 & +1.2 & AI
+over-indexed \\
+Unequal public awareness & 1.5 & 0.4 & +1.1 & AI over-indexed \\
+Safety, security and environmental risks & 1.4 & 3.5 & −2.1 & AI
+under-indexed \\
+Environmental and ecosystem impacts & 0.2 & 2.3 & −2.1 & AI
+under-indexed \\
+Environmental contamination and release & 0.1 & 1.9 & −1.8 & AI
+under-indexed \\
+Unclear and inconsistent regulation & 0.7 & 2.2 & −1.5 & AI
+under-indexed \\
+Uncertain environmental and community impacts & 0.2 & 1.6 & −1.4 & AI
+under-indexed \\
+High costs and affordability & 1.0 & 2.4 & −1.4 & AI under-indexed \\
+Short-term, fragmented responses & 1.3 & 2.7 & −1.4 & AI
+under-indexed \\
+Misuse by malicious actors & 1.0 & 2.3 & −1.3 & AI under-indexed \\
+Information complexity and comprehension & 1.5 & 2.8 & −1.2 & AI
+under-indexed \\
+Long-term health and environmental impacts & 0.1 & 1.4 & −1.2 & AI
+under-indexed \\
+\bottomrule
+\end{longtable}
+
+\textbf{Panel B --- lens-level distinctiveness (both baselines)}.
+Per-lens AI-vs-non-AI share difference under technology-weighted and
+document-weighted baselines.
+
+\begin{longtable}[]{@{}llllll@{}}
+\toprule
+\textbf{Framing lens} & \textbf{AI share (\%)} & \textbf{Non-AI share,
+tech-weighted (\%)} & \textbf{Δ tech-weighted (pp)} & \textbf{Non-AI
+share, doc-weighted (\%)} & \textbf{Δ doc-weighted (pp)} \\
+\midrule
+\endhead
+Privacy, Consent \& Data & 21.9 & 5.6 & +16.4 & 5.3 & +16.7 \\
+Security, Misuse \& Threats & 18.0 & 13.4 & +4.6 & 9.3 & +8.7 \\
+Equity \& Inclusion & 18.5 & 15.4 & +3.2 & 13.8 & +4.7 \\
+System Readiness \& Reliability & 19.3 & 16.7 & +2.6 & 18.6 & +0.7 \\
+Transparency \& Communication & 15.1 & 12.8 & +2.3 & 11.7 & +3.4 \\
+Ethical \& Societal Boundaries & 8.0 & 7.9 & +0.1 & 11.5 & −3.4 \\
+Governance \& Accountability & 24.3 & 26.9 & −2.6 & 28.1 & −3.7 \\
+Public Participation \& Engagement & 13.8 & 16.5 & −2.7 & 16.7 & −2.9 \\
+Purpose, Benefits \& Economic Impact & 10.6 & 13.5 & −3.0 & 12.5 &
+−1.9 \\
+Safety, Health \& Environment & 11.8 & 25.1 & −13.3 & 27.1 & −15.3 \\
+\bottomrule
+\end{longtable}
+
+\textbf{Supplementary tables}: full lens-level distinctiveness under
+both baselines for benefits; sensitivity numbers across V0/V1/V3
+prompts.
+
+% ─────────────────────────────────────────────────────────────────────────────
+% R3. TEMPORAL DYNAMICS: STABLE SPREAD, SHIFTING CONTENT
+% Notebook: 04_temporal_dynamics.ipynb
+%   - Four-window entropy calculation: cells 4–8
+%   - Content mix by time window (top-5 per window): cells 10–12
+%   - Heatmap of cluster shares across windows (Figure 4): cell 14/28
+%   - Benefit trajectory (rising/declining clusters): cells 22–26
+%   - Year-by-year displacement in concern/benefit space: cells 6–8, 18–20
+% ─────────────────────────────────────────────────────────────────────────────
+\textbf{R3. AI public discourse content shifts over time within stable
+spread}
+
+\textbf{What it claims}: the spread of AI concerns across the cluster
+space is stable across two decades; the content mix shifts in
+interpretable ways that reflect both substantive evolution and the
+changing landscape of dialogue commissioning.
+
+\textbf{Empirical substantiation}:
+
+\begin{itemize}
+\item
+  Across four time windows (2004--2017, 2018--2020, 2021--2023,
+  2024--2025), the~\textbf{normalised entropy of AI concern
+  distributions stays at \textasciitilde0.91--0.95}. The spread is
+  stable across two decades.
+\item
+  Sample sizes per window: 1,432 phrases (2004--2017, n=5 documents);
+  1,568 (2018--2020, n=6); 2,427 (2021--2023, n=19); 1,528 (2024--2025,
+  n=11). The corpus is concentrated post-2017.
+\item
+  \textbf{Content mix shifts}:
+
+  \begin{itemize}
+  \item
+    \textbf{2004--2017}: data themes dominate. Top 5 --- Misuse of
+    personal data (8.6\%), Lack of data transparency (5.1\%), Privacy
+    and data security (4.7\%), Loss of human oversight and contact
+    (3.6\%), Invasion of personal privacy (3.2\%).
+  \item
+    \textbf{2018--2020}: data themes recede; governance, equity, and
+    autonomy concerns rise. Top 5 --- Distrust in governance and
+    oversight (3.4\%), Resource scarcity and inefficient use (3.2\%),
+    Loss of personal autonomy (3.1\%), Misuse of personal data (3.1\%),
+    Safety/security/environmental risks (3.0\%).
+  \item
+    \textbf{2021--2023}: data themes return strongly. Top 5 --- Misuse
+    of personal data (6.5\%), Privacy and data security (4.4\%), Lack of
+    transparency in decision-making (4.2\%), Insufficient human
+    oversight (4.0\%), Mistrust of government data handling (3.8\%).
+  \item
+    \textbf{2024--2025}: data privacy still top, but joined by themes of
+    exclusion and broader oversight. Top 5 --- Misuse of personal data
+    (5.4\%), Privacy and data security (4.9\%), Distrust in governance
+    and oversight (3.8\%), Exclusion of marginalised groups (3.7\%),
+    Lack of transparency in decision-making (3.3\%).
+  \end{itemize}
+\item
+  \textbf{Defensible claim}: AI public discourse has consistently
+  centred on data themes, with their relative prominence ebbing and
+  flowing as other concerns (governance, equity, exclusion) come into
+  focus alongside them.
+\item
+  \textbf{Caveat}: temporal patterns reflect in part
+  what~\emph{kinds}~of dialogues were commissioned in each period. The
+  2004--2017 window is dominated by health-data dialogues and other
+  early data-governance work; 2018--2020 sees more general-attitudes
+  work; 2021--2023 reflects post-pandemic biometrics and trust-related
+  dialogues; 2024--2025 is the current AI policy moment. The temporal
+  narrative is partly about the commissioning landscape, not just
+  shifting public attitudes.
+\end{itemize}
+
+\textbf{Figure 4}: heatmap of cluster shares across the four time
+windows for the union of clusters appearing in the top 10 of any window.
+Rows ordered by which window each cluster peaks in, producing a diagonal
+pattern that visualises the content shift.
+
+\includegraphics[width=6.26806in,height=5.66806in]{media/image4.png}
+
+\textbf{Reading the finding}: this is a more constrained temporal claim
+than the original v12 draft made, but it is the claim the data supports.
+"AI public discourse evolves rapidly" would be an overclaim; "AI public
+discourse content mix shifts within a stable spread" is what the
+evidence shows.
+
+% ─────────────────────────────────────────────────────────────────────────────
+% R4. LIMITATIONS
+% Notebook: 05_robustness.ipynb
+%   - Inter-rater validation numbers: cell 4 (sample generation); results from run
+%   - Prompt sensitivity results: §SECTION 10C (cell 31)
+%   - Dendrogram ARI: 02_shared_structure.ipynb cells 4/18
+%   - k-sensitivity: 05_robustness.ipynb §SECTION 10/10B
+%   - Corpus imbalance and segmentation heterogeneity:
+%       00_data_quality.ipynb, 01_processing.ipynb cells 22–24
+% ─────────────────────────────────────────────────────────────────────────────
+\textbf{R4. Limitations}
+
+\begin{itemize}
+\item
+  \textbf{Human inter-rater validation}~against a stratified sample of
+  50 paragraphs shows 92\% agreement and Cohen's κ = 0.84
+  (almost-perfect). The LLM is prone to over-extraction (4 of 50 cases)
+  but not under-extraction (0 cases). The bias has a direction: when in
+  doubt, the LLM tends to find concerns rather than miss them.
+  Validation against a larger sample is a candidate task for the final
+  canonical run.
+\item
+  \textbf{Prompt sensitivity}~analysis confirms direction of headline
+  findings holds across V0/V1/V3 variants; magnitudes (specifically the
+  Privacy effect) are sensitive to decontextualisation
+  strictness.~\emph{(The sensitivity analysis was run against the v16
+  corpus; re-running against v19 chunks is a candidate task.)}
+\item
+  \textbf{Lens-scheme empirical support}: dendrogram-based check
+  produces ARI = 0.185 for concerns and 0.150 for benefits, indicating
+  the lens scheme is a useful conceptual organisation but does not carve
+  at strong joints in the data structure. Some lenses (notably
+  Privacy/Consent \& Data) are well-validated by the data; others are
+  looser groupings. We present the lens scheme as a deliberate analytic
+  choice that organises the data into theoretically meaningful groups,
+  with the dendrogram as evidence that some of those groups carve at
+  real semantic joints (validating those findings) while others don't
+  (noting which lens-level claims to hedge).
+\item
+  \textbf{Corpus imbalance}: 41 of 66 documents are AI; smaller
+  technologies are thinly represented. Inferences about non-AI
+  technologies as a whole rest predominantly on the genetic-technology
+  and gene-editing subcorpora.
+\item
+  \textbf{Segmentation heterogeneity}: 15 of 66 documents (mostly recent
+  UK AI policy reports produced from HTML originals) lack extractable
+  paragraph break structure and were segmented at sentence boundaries
+  throughout. A further 43 documents had at least one oversized
+  paragraph segmented internally. The remaining 8 documents are pure
+  paragraph segmentation. The~chunking\_method~column records this
+  per-chunk for audit purposes.
+\item
+  \textbf{Year coverage gaps}: substantial absences in 2005--2006,
+  2011--2014, and 2020 reflect what public dialogues were commissioned
+  during those periods rather than any analytical choice.
+\item
+  Reports were segmented using a hybrid strategy. Where PDF paragraph
+  structure was preserved, double-newline paragraph boundaries were
+  used. Where paragraphs were unusually long or paragraph boundaries
+  were not recoverable, text was split into sentence-based chunks of
+  approximately comparable length. Each chunk retained a method flag to
+  support quality checks.
+\end{itemize}
+
+\textbf{Open items before submission}
+
+(For the author's working list, not for the paper text.)
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\item
+  \textbf{Decide on canonical model}: gpt-5-mini (current) vs GPT-5 vs
+  both as a robustness check.
+\item
+  \textbf{Re-run prompt sensitivity against v19 corpus}~if time/budget
+  allows; current numbers are from v16 sample.
+\item
+  \textbf{Expand human validation}~beyond the 50-paragraph proof of
+  concept.
+\item
+  \textbf{Regenerate paper-asset PNGs}~(Figures 1--4) from v19 outputs
+  via the in-notebook Paper Assets section.
+\end{enumerate}
