@@ -22,7 +22,7 @@ Public API:
   Temporal helpers:
     assign_window, _parse_listcol
   Comparison helpers:
-    _volume_table, _top_clusters
+    volume_table, top_clusters
   Export helpers:
     _clean_for_xlsx
   Extraction-cache validation:
@@ -1331,7 +1331,7 @@ def _parse_listcol(s) -> list:
 # Comparison helpers
 # ---------------------------------------------------------------------------
 
-def _volume_table(df: pd.DataFrame, kind: str) -> pd.DataFrame:
+def volume_table(df: pd.DataFrame, kind: str) -> pd.DataFrame:
     """Phrase counts and paragraph incidence by technology × year.
 
     Parameters
@@ -1360,7 +1360,7 @@ def _volume_table(df: pd.DataFrame, kind: str) -> pd.DataFrame:
     return pd.concat([phrase_counts, para_inc], axis=1)
 
 
-def _top_clusters(
+def top_clusters(
     df: pd.DataFrame,
     summary_df: Optional[pd.DataFrame],
     kind: str,

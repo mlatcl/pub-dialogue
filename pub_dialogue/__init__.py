@@ -74,8 +74,8 @@ from pub_dialogue.utils import (  # noqa: F401
     # Sensitivity
     run_sensitivity,
     # Comparison helpers
-    _volume_table,
-    _top_clusters,
+    volume_table,
+    top_clusters,
     # Constants
     CROSSCUTTING_ENTROPY_THRESHOLD,
     MIN_CHUNK_WORDS,

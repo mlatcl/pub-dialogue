@@ -677,7 +677,7 @@ class TestCleanForXlsx:
 
 
 # ===========================================================================
-# _volume_table
+# volume_table
 # ===========================================================================
 
 class TestVolumeTable:
@@ -691,17 +691,17 @@ class TestVolumeTable:
 
     def test_returns_dataframe(self):
         df = self._make_df()
-        result = address._volume_table(df, "concern")
+        result = address.volume_table(df, "concern")
         assert isinstance(result, pd.DataFrame)
 
     def test_non_empty_result(self):
         df = self._make_df()
-        result = address._volume_table(df, "concern")
+        result = address.volume_table(df, "concern")
         assert len(result) > 0
 
 
 # ===========================================================================
-# _top_clusters
+# top_clusters
 # ===========================================================================
 
 class TestTopClusters:
@@ -710,7 +710,7 @@ class TestTopClusters:
             "cluster_id": [0, 1, 0, 2, 1],
             "technology_meta": ["AI"] * 5,
         })
-        result = address._top_clusters(df, None, "concern")
+        result = address.top_clusters(df, None, "concern")
         assert isinstance(result, pd.DataFrame)
 
 
