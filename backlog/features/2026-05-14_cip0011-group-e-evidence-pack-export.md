@@ -1,7 +1,7 @@
 ---
 id: "2026-05-14_cip0011-group-e-evidence-pack-export"
 title: "Add export_evidence_pack() and restore export cells to 05_robustness.ipynb"
-status: "Ready"
+status: "Completed"
 priority: "Medium"
 created: "2026-05-14"
 last_updated: "2026-05-14"

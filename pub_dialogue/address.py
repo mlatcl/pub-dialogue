@@ -25,8 +25,10 @@ Public API:
     volume_table, top_clusters
   Visualisation helpers:
     cross_technology_heatmap
+  Robustness analysis:
+    stable_core_robustness, lexical_novelty_over_time
   Export helpers:
-    _clean_for_xlsx
+    export_evidence_pack, _clean_for_xlsx
   Extraction-cache validation:
     validate_extraction_cache
     write_extraction_diagnostics
@@ -52,7 +54,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pub_dialogue.access import AccessStage
@@ -1470,6 +1472,181 @@ def cross_technology_heatmap(
 
 
 # ---------------------------------------------------------------------------
+# Robustness analysis
+# ---------------------------------------------------------------------------
+
+def stable_core_robustness(
+    salience_df: pd.DataFrame,
+    ai_col: Optional[str] = None,
+    entropy_thresholds: Optional[list] = None,
+    size_quantiles: Optional[list] = None,
+) -> Tuple[pd.DataFrame, pd.Series]:
+    """Assess robustness of the AI concern/benefit fingerprint.
+
+    Sweeps over entropy thresholds and cluster-size quantiles to check
+    whether the AI-distinctive clusters are stable across parameter choices.
+
+    Parameters
+    ----------
+    salience_df:
+        Technology × cluster_id salience matrix (rows = technologies,
+        columns = cluster ids, values = fraction of phrases).  Produced by
+        :meth:`AddressStage.concern_salience` or
+        :meth:`AddressStage.benefit_salience`.
+    ai_col:
+        Column name for the AI technology row.  If ``None``, the first row
+        whose name contains "ai" (case-insensitive) is used.
+    entropy_thresholds:
+        List of entropy thresholds for cross-cutting definition.
+        Defaults to ``[0.4, 0.5, 0.6]``.
+    size_quantiles:
+        List of cluster-size quantiles used to define the stable core.
+        Defaults to ``[0.70, 0.75, 0.80]``.
+
+    Returns
+    -------
+    Tuple of:
+      - summary_df: DataFrame with one row per (entropy_threshold, size_quantile)
+        combination showing cross-cutting / core counts and top AI clusters.
+      - fingerprint: pd.Series of AI-minus-other-mean share for cross-cutting
+        clusters at the default threshold (0.5 entropy).
+    """
+    if entropy_thresholds is None:
+        entropy_thresholds = [0.4, 0.5, 0.6]
+    if size_quantiles is None:
+        size_quantiles = [0.70, 0.75, 0.80]
+
+    mat = salience_df.copy().apply(pd.to_numeric, errors="coerce").fillna(0)
+    sal = mat.T  # rows = clusters, cols = technologies
+
+    if ai_col is None:
+        candidates = [
+            c for c in sal.columns
+            if str(c).strip().lower() in ("ai", "artificial intelligence", "artificial_intelligence")
+        ]
+        if not candidates:
+            candidates = [c for c in sal.columns if "artificial" in str(c).strip().lower()]
+        if not candidates:
+            raise ValueError(
+                f"Could not detect AI column. Available technologies: {list(sal.columns)}"
+            )
+        ai_col = candidates[0]
+
+    from pub_dialogue.utils import normalized_entropy as _norm_ent  # avoid circular import
+
+    cluster_size = sal.sum(axis=1)
+    entropy_series = sal.apply(lambda row: _norm_ent(row.values), axis=1)
+
+    def _fingerprint(cross_mask: pd.Series) -> pd.Series:
+        sub = sal.loc[cross_mask]
+        row_total = sub.sum(axis=1).replace(0, float("nan"))
+        shares = sub.div(row_total, axis=0).fillna(0)
+        ai_share = shares[ai_col]
+        other_cols = [c for c in shares.columns if c != ai_col]
+        other_mean = (
+            shares[other_cols].mean(axis=1) if other_cols else pd.Series(0.0, index=shares.index)
+        )
+        return (ai_share - other_mean).sort_values(ascending=False)
+
+    rows = []
+    for et in entropy_thresholds:
+        cross = entropy_series >= et
+        for q in size_quantiles:
+            size_thresh = float(cluster_size.quantile(q))
+            core = cross & (cluster_size >= size_thresh)
+            fp = _fingerprint(cross)
+            rows.append({
+                "entropy_threshold": et,
+                "size_quantile": q,
+                "cross_cutting_clusters": int(cross.sum()),
+                "cross_cutting_pct": round(float(cross.mean()), 3),
+                "core_clusters": int(core.sum()),
+                "size_threshold": round(size_thresh, 4),
+                "top_AI_over_indexed": "; ".join(str(i) for i in fp.head(5).index),
+                "top_AI_under_indexed": "; ".join(str(i) for i in fp.tail(5).index),
+            })
+
+    summary_df = pd.DataFrame(rows)
+    default_cross = entropy_series >= 0.5
+    fingerprint = _fingerprint(default_cross)
+    return summary_df, fingerprint
+
+
+def lexical_novelty_over_time(
+    df: pd.DataFrame,
+    kind: str,
+    tech_col: str = "technology_meta",
+    ai_label: str = "ai",
+) -> pd.DataFrame:
+    """Year-on-year lexical novelty of AI concern/benefit phrases.
+
+    Tokenises each phrase and computes the share of new lexical items
+    (words not seen in any prior year) for each year in AI dialogues.
+
+    Parameters
+    ----------
+    df:
+        concerns_df or benefits_df; must contain *tech_col*, ``'year'``, and
+        a column named *kind* (e.g. ``'concern'`` or ``'benefit'``).
+    kind:
+        ``'concern'`` or ``'benefit'`` — selects the phrase column.
+    tech_col:
+        Column name for technology labels.
+    ai_label:
+        Lowercase string used to identify AI rows (matched against lowercased
+        technology values).
+
+    Returns
+    -------
+    DataFrame with columns: ``year``, ``new_word_share``,
+    ``num_phrases``, ``vocab_size``, ``new_words_count``.
+    """
+    import re as _re
+    from collections import Counter as _Counter
+    from pub_dialogue.utils import parse_year as _parse_year  # avoid circular import
+
+    if kind not in ("concern", "benefit"):
+        raise ValueError(f"kind must be 'concern' or 'benefit', got {kind!r}")
+
+    df_ai = df.loc[
+        df[tech_col].astype(str).str.strip().str.lower() == ai_label,
+        ["year", kind],
+    ].copy()
+    df_ai["__year__"] = df_ai["year"].apply(_parse_year)
+    df_ai = df_ai.dropna(subset=["__year__"])
+    df_ai["__year__"] = df_ai["__year__"].astype(int)
+
+    def _tokenize(s: str) -> list:
+        s = str(s).lower()
+        s = _re.sub(r"[^a-z0-9\s]", " ", s)
+        return [w for w in s.split() if len(w) > 3]
+
+    vocab_by_year: Dict[int, _Counter] = {}
+    for y, grp in df_ai.groupby("__year__"):
+        tokens: list = []
+        for phrase in grp[kind].dropna():
+            tokens.extend(_tokenize(phrase))
+        vocab_by_year[int(y)] = _Counter(tokens)
+
+    years = sorted(vocab_by_year.keys())
+    seen: set = set()
+    rows = []
+    for y in years:
+        words = set(vocab_by_year[y].keys())
+        new_words = words - seen
+        rows.append({
+            "year": y,
+            "new_word_share": len(new_words) / max(len(words), 1),
+            "num_phrases": int((df_ai["__year__"] == y).sum()),
+            "vocab_size": len(words),
+            "new_words_count": len(new_words),
+        })
+        seen |= words
+
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
 # Export helpers
 # ---------------------------------------------------------------------------
 
@@ -1483,6 +1660,201 @@ def _clean_for_xlsx(v: Any) -> Any:
     if isinstance(v, str):
         return _ILLEGAL_XLSX_CHARS.sub("", v)
     return v
+
+
+# ---------------------------------------------------------------------------
+# Evidence-pack export
+# ---------------------------------------------------------------------------
+
+def export_evidence_pack(
+    chunks_df: pd.DataFrame,
+    phrases_df: pd.DataFrame,
+    kind: str,
+    cluster_labels: Dict[Any, str],
+    framing_lens_mappings: Dict[str, Any],
+    output_folder: Path,
+    tech_col: str = "technology_meta",
+) -> Dict[str, Path]:
+    """Build and write paragraph-level traceability datasets and an HTML evidence pack.
+
+    Produces four files in *output_folder*:
+
+    * ``{kind}_traceability_paragraphs.csv``
+    * ``{kind}_traceability_paragraphs.jsonl``
+    * ``{kind}_traceability_paragraphs.parquet`` (optional — skipped if pyarrow absent)
+    * ``{kind}_evidence_pack_paragraphs.html`` — self-contained HTML listing each
+      source paragraph with its extracted phrases, cluster labels, and framing lenses
+
+    Parameters
+    ----------
+    chunks_df:
+        Paragraph-level DataFrame; must have columns ``chunk_id``, ``source_file``,
+        ``chunk_index``, *tech_col*, ``year``, ``text``, ``word_count``.
+    phrases_df:
+        Phrase-level DataFrame (``concerns_df`` or ``benefits_df``); must have
+        ``chunk_id``, *kind* (phrase text), and ``cluster_id``.
+    kind:
+        ``'concern'`` or ``'benefit'``.
+    cluster_labels:
+        Mapping of cluster_id → human-readable label string.
+    framing_lens_mappings:
+        Dict mapping lens_name → ``{'cluster_ids': [...], ...}`` as stored in
+        the analysis artefacts.
+    output_folder:
+        Directory where files will be written.  Created if absent.
+    tech_col:
+        Column name for technology labels in *chunks_df*.
+
+    Returns
+    -------
+    dict
+        Paths of the files actually written, keyed by ``'csv'``, ``'jsonl'``,
+        ``'html'``, and optionally ``'parquet'``.
+    """
+    import html as _html_mod
+
+    if kind not in ("concern", "benefit"):
+        raise ValueError(f"kind must be 'concern' or 'benefit', got {kind!r}")
+
+    output_folder = Path(output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
+
+    # ── Build paragraph table ──────────────────────────────────────────────
+    keep_cols = ["chunk_id", "source_file", "chunk_index", tech_col, "year", "text", "word_count"]
+    available = [c for c in keep_cols if c in chunks_df.columns]
+    para_df = chunks_df[available].copy()
+    para_df.rename(columns={"text": "paragraph_text", "year": "year_meta"}, inplace=True)
+
+    # Aggregate phrase text per paragraph
+    phrase_list = (
+        phrases_df.groupby("chunk_id")[kind]
+        .apply(list)
+        .rename(f"extracted_{kind}s")
+    )
+    para_df = para_df.merge(phrase_list, left_on="chunk_id", right_index=True, how="left")
+
+    # Aggregate cluster IDs per paragraph
+    cluster_list = (
+        phrases_df.groupby("chunk_id")["cluster_id"]
+        .apply(list)
+        .rename("cluster_ids")
+    )
+    para_df = para_df.merge(cluster_list, left_on="chunk_id", right_index=True, how="left")
+
+    # Map cluster IDs → labels
+    cluster_label_map = {
+        cid: cluster_labels.get(cid, f"Cluster {cid}")
+        for cid in phrases_df["cluster_id"].unique()
+    }
+
+    def _to_labels(ids: Any) -> list:
+        if not isinstance(ids, list):
+            return []
+        return [cluster_label_map.get(c, f"Cluster {c}") for c in ids]
+
+    para_df["cluster_labels"] = para_df["cluster_ids"].apply(_to_labels)
+
+    # Map cluster IDs → framing lenses
+    cluster_to_lenses: Dict[Any, set] = {}
+    for lens_name, data in framing_lens_mappings.items():
+        for cid in data.get("cluster_ids", []):
+            cluster_to_lenses.setdefault(cid, set()).add(lens_name)
+
+    def _to_lenses(ids: Any) -> list:
+        if not isinstance(ids, list):
+            return []
+        lenses: set = set()
+        for cid in ids:
+            lenses |= cluster_to_lenses.get(cid, set())
+        return sorted(lenses)
+
+    para_df["framing_lenses"] = para_df["cluster_ids"].apply(_to_lenses)
+
+    para_df["paragraph_id"] = para_df.apply(
+        lambda r: f"{r['source_file']}::p{int(r['chunk_index'])}", axis=1
+    )
+
+    # ── Write tabular outputs ──────────────────────────────────────────────
+    written: Dict[str, Path] = {}
+    stem = f"{kind}_traceability_paragraphs"
+
+    csv_path = output_folder / f"{stem}.csv"
+    para_df.to_csv(csv_path, index=False)
+    written["csv"] = csv_path
+
+    jsonl_path = output_folder / f"{stem}.jsonl"
+    para_df.to_json(jsonl_path, orient="records", lines=True)
+    written["jsonl"] = jsonl_path
+
+    try:
+        parquet_path = output_folder / f"{stem}.parquet"
+        para_df.to_parquet(parquet_path, index=False)
+        written["parquet"] = parquet_path
+    except Exception:
+        pass
+
+    # ── Build HTML evidence pack ───────────────────────────────────────────
+    def _esc(s: Any) -> str:
+        return _html_mod.escape(str(s)) if s is not None else ""
+
+    html_parts = [
+        "<html><head><meta charset='utf-8'><style>",
+        (
+            "body{font-family:Arial, sans-serif; line-height:1.4;}"
+            " h1,h2,h3{margin-top:1.2em;}"
+            " .para{margin:0.8em 0; padding:0.8em; border:1px solid #ddd; border-radius:6px;}"
+            " .meta{color:#555; font-size:0.9em;}"
+            " .tags{color:#333; font-size:0.9em;}"
+            " code{background:#f5f5f5; padding:0.1em 0.3em; border-radius:4px;}"
+        ),
+        "</style></head><body>",
+        f"<h1>Evidence pack: paragraphs used in {kind} analysis</h1>",
+        (
+            f"<p>This document lists each paragraph used in the {kind} analysis, "
+            "grouped by <b>technology (metadata)</b> and <b>source report</b>. "
+            f"For each paragraph we include extracted {kind} phrases and derived "
+            "analytic tags (clusters and framing lenses).</p>"
+        ),
+    ]
+
+    phrase_col = f"extracted_{kind}s"
+    for tech in sorted(para_df[tech_col].dropna().unique()):
+        html_parts.append(f"<h2>{_esc(tech)}</h2>")
+        tech_df = para_df[para_df[tech_col] == tech].copy()
+        for report in sorted(tech_df["source_file"].unique()):
+            rep_df = tech_df[tech_df["source_file"] == report].sort_values("chunk_index")
+            html_parts.append(f"<h3>{_esc(report)}</h3>")
+            for _, row in rep_df.iterrows():
+                html_parts.append("<div class='para'>")
+                html_parts.append(
+                    f"<div class='meta'><b>{_esc(row['paragraph_id'])}</b>"
+                    f" — year: {_esc(row.get('year_meta'))}"
+                    f" — words: {_esc(row.get('word_count'))}</div>"
+                )
+                html_parts.append(f"<p>{_esc(row['paragraph_text'])}</p>")
+                phrases = row.get(phrase_col)
+                if isinstance(phrases, list) and phrases:
+                    html_parts.append(
+                        f"<div class='tags'><b>{kind.capitalize()}s:</b> "
+                        + "; ".join(_esc(x) for x in phrases)
+                        + "</div>"
+                    )
+                lenses = row.get("framing_lenses")
+                if isinstance(lenses, list) and lenses:
+                    html_parts.append(
+                        "<div class='tags'><b>Framing lenses:</b> "
+                        + ", ".join(_esc(x) for x in lenses)
+                        + "</div>"
+                    )
+                html_parts.append("</div>")
+
+    html_parts.append("</body></html>")
+
+    html_path = output_folder / f"{kind}_evidence_pack_paragraphs.html"
+    html_path.write_text("\n".join(html_parts), encoding="utf-8")
+    written["html"] = html_path
+
+    return written
 
 
 # ---------------------------------------------------------------------------

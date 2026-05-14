@@ -1,7 +1,7 @@
 ---
 id: "2026-05-14_cip0011-group-d-robustness-cells"
 title: "Add stable_core_robustness and lexical_novelty_over_time and restore 05_robustness cells"
-status: "Ready"
+status: "Completed"
 priority: "High"
 created: "2026-05-14"
 last_updated: "2026-05-14"

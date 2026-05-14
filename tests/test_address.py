@@ -752,6 +752,94 @@ class TestCrossTechnologyHeatmap:
 
 
 # ===========================================================================
+# stable_core_robustness
+# ===========================================================================
+
+class TestStableCoreRobustness:
+    def _make_salience_df(self):
+        import numpy as np
+        rng = np.random.default_rng(42)
+        data = rng.random((4, 8))
+        # Normalise rows so they sum to 1
+        data = data / data.sum(axis=1, keepdims=True)
+        return pd.DataFrame(
+            data,
+            index=["AI", "Nuclear", "GM", "Robotics"],
+            columns=list(range(8)),
+        )
+
+    def test_returns_tuple(self):
+        sal = self._make_salience_df()
+        result = address.stable_core_robustness(sal, ai_col="AI")
+        assert isinstance(result, tuple) and len(result) == 2
+
+    def test_summary_df_shape(self):
+        sal = self._make_salience_df()
+        summary, fp = address.stable_core_robustness(
+            sal, ai_col="AI",
+            entropy_thresholds=[0.4, 0.6],
+            size_quantiles=[0.5, 0.75],
+        )
+        # 2 thresholds x 2 quantiles = 4 rows
+        assert len(summary) == 4
+        assert "entropy_threshold" in summary.columns
+
+    def test_fingerprint_is_series(self):
+        sal = self._make_salience_df()
+        _, fp = address.stable_core_robustness(sal, ai_col="AI")
+        assert isinstance(fp, pd.Series)
+
+    def test_invalid_ai_col_raises(self):
+        sal = self._make_salience_df().rename(index={"AI": "Nanotech"})
+        with pytest.raises(ValueError, match="Could not detect AI column"):
+            address.stable_core_robustness(sal)
+
+
+# ===========================================================================
+# lexical_novelty_over_time
+# ===========================================================================
+
+class TestLexicalNoveltyOverTime:
+    def _make_df(self):
+        return pd.DataFrame({
+            "technology_meta": ["AI"] * 9 + ["Nuclear"],
+            "year": [2018, 2018, 2018, 2019, 2019, 2019, 2020, 2020, 2020, 2019],
+            "concern": [
+                "automation job loss", "algorithmic bias risk", "privacy surveillance",  # 2018
+                "autonomous vehicle safety", "facial recognition misuse", "deepfake manipulation",  # 2019
+                "misinformation spread online", "concentration market power", "energy consumption data centres",  # 2020
+                "nuclear waste storage",  # nuclear
+            ],
+        })
+
+    def test_returns_dataframe(self):
+        df = self._make_df()
+        result = address.lexical_novelty_over_time(df, "concern")
+        assert isinstance(result, pd.DataFrame)
+
+    def test_row_count_equals_year_count(self):
+        df = self._make_df()
+        result = address.lexical_novelty_over_time(df, "concern")
+        assert len(result) == 3  # 2018, 2019, 2020
+
+    def test_first_year_all_new(self):
+        df = self._make_df()
+        result = address.lexical_novelty_over_time(df, "concern")
+        assert result.iloc[0]["new_word_share"] == pytest.approx(1.0)
+
+    def test_later_year_less_novel(self):
+        df = self._make_df()
+        result = address.lexical_novelty_over_time(df, "concern")
+        # Later years should have lower or equal new_word_share than first year
+        assert result.iloc[1]["new_word_share"] <= 1.0
+
+    def test_invalid_kind_raises(self):
+        df = self._make_df()
+        with pytest.raises(ValueError, match="kind must be"):
+            address.lexical_novelty_over_time(df, "other")
+
+
+# ===========================================================================
 # ai_fingerprint_over_crosscut
 # ===========================================================================
 
@@ -923,3 +1011,89 @@ class TestTemporalClusterFrequency:
         phrases_df, chunks_df = self._make_test_data()
         with pytest.raises(ValueError, match="kind must be"):
             address.temporal_cluster_frequency(phrases_df, chunks_df, kind="invalid")
+
+
+class TestExportEvidencePack:
+    """Tests for export_evidence_pack()."""
+
+    def _make_data(self):
+        chunks_df = pd.DataFrame({
+            "chunk_id": ["c1", "c2"],
+            "source_file": ["doc_a.pdf", "doc_a.pdf"],
+            "chunk_index": [0, 1],
+            "technology_meta": ["ai", "ai"],
+            "year": [2022, 2022],
+            "text": ["Paragraph about safety.", "Another paragraph."],
+            "word_count": [3, 2],
+        })
+        phrases_df = pd.DataFrame({
+            "chunk_id": ["c1", "c1", "c2"],
+            "concern": ["safety risks", "job loss", "bias"],
+            "cluster_id": [0, 1, 0],
+        })
+        cluster_labels = {0: "Safety", 1: "Employment"}
+        framing_lens_mappings = {
+            "risk": {"cluster_ids": [0]},
+            "economic": {"cluster_ids": [1]},
+        }
+        return chunks_df, phrases_df, cluster_labels, framing_lens_mappings
+
+    def test_returns_dict_of_paths(self, tmp_path):
+        chunks_df, phrases_df, cluster_labels, framing_lens_mappings = self._make_data()
+        result = address.export_evidence_pack(
+            chunks_df, phrases_df, "concern", cluster_labels,
+            framing_lens_mappings, tmp_path
+        )
+        assert isinstance(result, dict)
+        assert "csv" in result
+        assert "html" in result
+
+    def test_csv_written_with_expected_columns(self, tmp_path):
+        chunks_df, phrases_df, cluster_labels, framing_lens_mappings = self._make_data()
+        result = address.export_evidence_pack(
+            chunks_df, phrases_df, "concern", cluster_labels,
+            framing_lens_mappings, tmp_path
+        )
+        df = pd.read_csv(result["csv"])
+        assert "paragraph_id" in df.columns
+        assert "extracted_concerns" in df.columns
+
+    def test_html_written_and_contains_tech(self, tmp_path):
+        chunks_df, phrases_df, cluster_labels, framing_lens_mappings = self._make_data()
+        result = address.export_evidence_pack(
+            chunks_df, phrases_df, "concern", cluster_labels,
+            framing_lens_mappings, tmp_path
+        )
+        html_content = result["html"].read_text()
+        assert "<html>" in html_content
+        assert "ai" in html_content.lower()
+
+    def test_invalid_kind_raises(self, tmp_path):
+        chunks_df, phrases_df, cluster_labels, framing_lens_mappings = self._make_data()
+        with pytest.raises(ValueError, match="kind must be"):
+            address.export_evidence_pack(
+                chunks_df, phrases_df, "widget", cluster_labels,
+                framing_lens_mappings, tmp_path
+            )
+
+    def test_benefit_kind_produces_benefit_column(self, tmp_path):
+        chunks_df = pd.DataFrame({
+            "chunk_id": ["c1"],
+            "source_file": ["doc.pdf"],
+            "chunk_index": [0],
+            "technology_meta": ["ai"],
+            "year": [2022],
+            "text": ["Paragraph about efficiency."],
+            "word_count": [3],
+        })
+        phrases_df = pd.DataFrame({
+            "chunk_id": ["c1"],
+            "benefit": ["increased efficiency"],
+            "cluster_id": [0],
+        })
+        result = address.export_evidence_pack(
+            chunks_df, phrases_df, "benefit", {0: "Efficiency"},
+            {}, tmp_path
+        )
+        df = pd.read_csv(result["csv"])
+        assert "extracted_benefits" in df.columns
