@@ -639,6 +639,95 @@ class AddressStage:
 
         return mappings
 
+    # -------------------------------------------------------------------
+    # Convenience façade — delegate to module-level analysis helpers
+    # (allows notebooks to use _address.xxx() throughout)
+    # -------------------------------------------------------------------
+
+    def volume_table(self, df: "pd.DataFrame", kind: str) -> "pd.DataFrame":
+        """Delegate to module-level :func:`volume_table`."""
+        return volume_table(df, kind)
+
+    def top_clusters(
+        self,
+        df: "pd.DataFrame",
+        summary_df: "Optional[pd.DataFrame]",
+        kind: str,
+        n: int = 10,
+    ) -> "pd.DataFrame":
+        """Delegate to module-level :func:`top_clusters`."""
+        return top_clusters(df, summary_df, kind, n)
+
+    def cross_technology_heatmap(
+        self,
+        salience_df: "pd.DataFrame",
+        cluster_labels: dict,
+        kind: str,
+        top_n: int = 40,
+    ) -> Any:
+        """Delegate to module-level :func:`cross_technology_heatmap`."""
+        return cross_technology_heatmap(salience_df, cluster_labels, kind, top_n)
+
+    def stable_core_robustness(
+        self,
+        salience_df: "pd.DataFrame",
+        ai_col: Optional[str] = None,
+        entropy_thresholds: Optional[list] = None,
+        size_quantiles: Optional[list] = None,
+    ) -> "Tuple[pd.DataFrame, pd.Series]":
+        """Delegate to module-level :func:`stable_core_robustness`."""
+        return stable_core_robustness(
+            salience_df,
+            ai_col=ai_col,
+            entropy_thresholds=entropy_thresholds,
+            size_quantiles=size_quantiles,
+        )
+
+    def lexical_novelty_over_time(
+        self,
+        df: "pd.DataFrame",
+        kind: str,
+        tech_col: Optional[str] = None,
+        ai_label: Optional[str] = None,
+    ) -> "pd.DataFrame":
+        """Delegate to module-level :func:`lexical_novelty_over_time`.
+
+        Defaults *tech_col* and *ai_label* to the stage's own configuration.
+        """
+        return lexical_novelty_over_time(
+            df,
+            kind,
+            tech_col=tech_col if tech_col is not None else self.tech_col,
+            ai_label=ai_label if ai_label is not None else self.ai_tech_label,
+        )
+
+    def export_evidence_pack(
+        self,
+        chunks_df: "pd.DataFrame",
+        phrases_df: "pd.DataFrame",
+        kind: str,
+        cluster_labels: dict,
+        framing_lens_mappings: dict,
+        output_folder: Optional["Path"] = None,
+        tech_col: Optional[str] = None,
+    ) -> "Dict[str, Any]":
+        """Delegate to module-level :func:`export_evidence_pack`.
+
+        Defaults *output_folder* and *tech_col* to the stage's own configuration.
+        """
+        out = output_folder if output_folder is not None else self.access.output_folder
+        tc = tech_col if tech_col is not None else self.tech_col
+        return export_evidence_pack(
+            chunks_df,
+            phrases_df,
+            kind,
+            cluster_labels,
+            framing_lens_mappings,
+            out,
+            tech_col=tc,
+        )
+
+
 DEFAULT_TECH_WORDS: List[str] = [
     "ai", "artificial intelligence", "nuclear", "genetic", "nano",
     "genome", "robot", "drone", "quantum", "gm", "embryo", "stem cell",
