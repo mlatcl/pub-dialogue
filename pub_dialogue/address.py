@@ -23,6 +23,8 @@ Public API:
     assign_window, _parse_listcol
   Comparison helpers:
     volume_table, top_clusters
+  Visualisation helpers:
+    cross_technology_heatmap
   Export helpers:
     _clean_for_xlsx
   Extraction-cache validation:
@@ -1393,6 +1395,78 @@ def top_clusters(
         )
     counts.insert(0, "kind", kind)
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Visualisation helpers
+# ---------------------------------------------------------------------------
+
+def cross_technology_heatmap(
+    salience_df: pd.DataFrame,
+    cluster_labels: Dict[Any, str],
+    kind: str,
+    top_n: int = 40,
+) -> Any:
+    """Heatmap of top-N concern/benefit clusters × all technologies.
+
+    Parameters
+    ----------
+    salience_df:
+        DataFrame with rows = technologies and columns = cluster ids, values =
+        proportion of phrases.  Produced by :func:`concern_salience` or
+        :func:`benefit_salience`.
+    cluster_labels:
+        Dict mapping cluster id → label string.
+    kind:
+        ``'concern'`` or ``'benefit'`` — used for axis and title labels.
+    top_n:
+        Number of clusters to display, ranked by mean salience across
+        technologies.
+
+    Returns
+    -------
+    plotly Figure
+    """
+    try:
+        import plotly.express as px  # type: ignore
+    except ImportError as exc:
+        raise ImportError("plotly is required for cross_technology_heatmap.") from exc
+
+    if kind not in ("concern", "benefit"):
+        raise ValueError(f"kind must be 'concern' or 'benefit', got {kind!r}")
+
+    top_cluster_ids = salience_df.mean(axis=0).nlargest(top_n).index.tolist()
+
+    def _pretty_label(cid: Any) -> str:
+        lbl = str(cluster_labels.get(cid, f"Cluster {cid}"))
+        return (lbl[:40] + "…") if len(lbl) > 40 else lbl
+
+    display_labels = [_pretty_label(c) for c in top_cluster_ids]
+
+    plot_df = salience_df[top_cluster_ids].copy()
+    plot_df.columns = display_labels
+
+    title = (
+        f"{'Concern' if kind == 'concern' else 'Benefit'} Salience by Technology"
+        f" (Top {top_n} Clusters)"
+    )
+
+    fig = px.imshow(
+        plot_df,
+        labels=dict(
+            x=f"{'Concern' if kind == 'concern' else 'Benefit'} Cluster",
+            y="Technology",
+            color="Salience",
+        ),
+        title=title,
+        aspect="auto",
+        color_continuous_scale="RdBu_r",
+    )
+    fig.update_layout(
+        xaxis_tickangle=-45,
+        margin=dict(l=150, b=200),
+    )
+    return fig
 
 
 # ---------------------------------------------------------------------------

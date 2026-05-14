@@ -715,6 +715,43 @@ class TestTopClusters:
 
 
 # ===========================================================================
+# cross_technology_heatmap
+# ===========================================================================
+
+class TestCrossTechnologyHeatmap:
+    def _make_salience_df(self):
+        import numpy as np
+        rng = np.random.default_rng(0)
+        data = rng.random((3, 10))
+        return pd.DataFrame(
+            data,
+            index=["AI", "Nuclear", "GM"],
+            columns=list(range(10)),
+        )
+
+    def test_returns_figure(self):
+        pytest.importorskip("plotly")
+        salience_df = self._make_salience_df()
+        labels = {i: f"Cluster {i}" for i in range(10)}
+        fig = address.cross_technology_heatmap(salience_df, labels, "concern", top_n=5)
+        import plotly.graph_objects as go
+        assert isinstance(fig, go.Figure)
+
+    def test_top_n_limits_columns(self):
+        pytest.importorskip("plotly")
+        salience_df = self._make_salience_df()
+        labels = {i: f"Cluster {i}" for i in range(10)}
+        fig = address.cross_technology_heatmap(salience_df, labels, "concern", top_n=5)
+        # The heatmap z should have 5 columns (top_n)
+        assert fig.data[0].z.shape[1] == 5
+
+    def test_invalid_kind_raises(self):
+        salience_df = self._make_salience_df()
+        with pytest.raises(ValueError, match="kind must be"):
+            address.cross_technology_heatmap(salience_df, {}, "other")
+
+
+# ===========================================================================
 # ai_fingerprint_over_crosscut
 # ===========================================================================
 
