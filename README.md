@@ -74,6 +74,14 @@ Access → Assess → Address pipeline:
 | `requirements/` | Project requirements (VibeSafe governance) |
 | `validation_playbook.md` | Researcher guide for reviewing and validating LLM outputs |
 
+## New to Python?
+
+If you have not used Python or the command line before, start with
+[SETUP.md](SETUP.md). It walks you through every step — installing Python,
+creating a virtual environment, configuring your API key, and launching the
+notebooks — with no assumed knowledge. macOS, Windows, and Linux are all
+covered.
+
 ## Quick start (local)
 
 ```bash
