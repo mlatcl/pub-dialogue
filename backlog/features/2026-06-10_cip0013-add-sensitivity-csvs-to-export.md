@@ -1,7 +1,7 @@
 ---
 id: "2026-06-10_cip0013-add-sensitivity-csvs-to-export"
 title: "Add lens sensitivity CSVs to export cell in 05_robustness.ipynb"
-status: "Proposed"
+status: "Completed"
 priority: "Low"
 created: "2026-06-10"
 last_updated: "2026-06-10"
@@ -50,3 +50,8 @@ is structured in that cell — follow the same pattern as existing entries.
 ### 2026-06-10
 
 Task created following acceptance of CIP-0013.
+
+No code change required. The export cell (05_robustness.ipynb) uses
+`OUTPUT_DIR.rglob("*")` which automatically includes all files in outputs/,
+so `lens_sensitivity_summary.csv` and `lens_sensitivity_all_runs.csv` will
+be zipped as soon as they exist.

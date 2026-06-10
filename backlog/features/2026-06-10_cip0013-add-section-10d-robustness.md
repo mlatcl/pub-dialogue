@@ -1,7 +1,7 @@
 ---
 id: "2026-06-10_cip0013-add-section-10d-robustness"
 title: "Add SECTION 10D lens-scheme sensitivity to 05_robustness.ipynb"
-status: "Proposed"
+status: "Completed"
 priority: "High"
 created: "2026-06-10"
 last_updated: "2026-06-10"
@@ -73,3 +73,9 @@ missing loads before the Section 10D code cell.
 ### 2026-06-10
 
 Task created following acceptance of CIP-0013.
+
+Implemented: two cells added to 05_robustness.ipynb after cell 39 (last
+Section 10C cell). Markdown cell provides design description and result
+placeholder; code cell calls _address.generate_lens_grouping() N=5 times,
+computes AI share per lens per run, finds the most-AI-salient lens each run,
+and reports direction-consistency count and pp range.
