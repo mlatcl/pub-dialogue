@@ -512,8 +512,19 @@ class AddressStage:
         -------
         framing_lens_mappings — ``{lens_name: {"description": ..., "cluster_ids": [...]}}``
         """
-        # Load from cache if the mappings file already exists
         prefix = "benefit_" if kind == "benefit" else ""
+
+        # 1. Canonical committed mapping — version-controlled, takes priority
+        _canonical = Path(__file__).parent / f"lens_mapping_canonical_{kind}.json"
+        if _canonical.exists():
+            logger.info(
+                "assign_framing_lenses: loading canonical %s lens mapping from %s",
+                kind, _canonical,
+            )
+            with open(_canonical) as f:
+                return json.load(f)
+
+        # 2. Run-output cache — fast path when re-running the same environment
         out_file = output_folder / f"{prefix}framing_lens_mappings.json"
         if out_file.exists():
             with open(out_file) as f:
@@ -637,6 +648,13 @@ class AddressStage:
         with open(out_file, "w") as f:
             json.dump(mappings, f, indent=2)
 
+        logger.warning(
+            "assign_framing_lenses: no canonical %s lens mapping found. "
+            "Generated from LLM and written to %s. "
+            "Review this file and copy it to pub_dialogue/lens_mapping_canonical_%s.json "
+            "to stabilise the mapping across runs.",
+            kind, out_file, kind,
+        )
         return mappings
 
     # -------------------------------------------------------------------
