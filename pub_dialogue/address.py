@@ -485,6 +485,133 @@ class AddressStage:
             )
         return cluster_labels_dict
 
+    def generate_lens_grouping(
+        self,
+        cluster_exemplars: dict,
+        cluster_labels_dict: dict,
+        n_clusters: int,
+        kind: str,
+        client,
+    ) -> dict:
+        """Call the LLM lens-grouping step unconditionally — no cache, no canonical file.
+
+        Used by the sensitivity analysis in ``05_robustness.ipynb`` to generate
+        N independent lens groupings on the same fixed cluster labels, so that
+        variability in AI distinctiveness can be measured across schemes.
+
+        Also called internally by :meth:`assign_framing_lenses` as its LLM fallback.
+
+        Parameters
+        ----------
+        cluster_exemplars:   dict mapping cluster_id → exemplar data
+        cluster_labels_dict: label dict from :meth:`label_clusters`
+        n_clusters:          total number of clusters (for coverage check)
+        kind:                ``'concern'`` or ``'benefit'``
+        client:              LLMClient instance
+
+        Returns
+        -------
+        ``{"framing_lenses": [{"name": ..., "description": ..., "suggested_clusters": [...]}, ...]}``
+        """
+        cluster_info = []
+        for cluster_id, data in cluster_exemplars.items():
+            cid = int(cluster_id)
+            label = cluster_labels_dict.get(str(cid), {}).get("label", f"Cluster {cid}")
+            desc = cluster_labels_dict.get(str(cid), {}).get("description", "")
+            ctype = "cross-cutting" if data.get("is_cross_cutting") else "tech-specific"
+            cluster_info.append(
+                f"{cid}. {label} ({ctype}, n={data.get('size', 0)}): {desc}"
+            )
+        cluster_summary_text = "\n".join(cluster_info)
+
+        kind_label = "concern" if kind == "concern" else "benefit"
+        lens_prompt = (
+            f"Analyze these {n_clusters} {kind_label} clusters from UK public dialogue reports.\n\n"
+            f"Clusters:\n{cluster_summary_text}\n\n"
+            f"Group these clusters into 8-12 higher-level FRAMING LENSES that capture how "
+            f"publics frame their {kind_label}s.\n\n"
+            "For each lens provide:\n"
+            "1. Name (2-4 words)\n2. Description (1 sentence)\n"
+            "3. List of cluster IDs that belong to this lens\n\n"
+            "A cluster can belong to multiple lenses if appropriate.\n"
+            "Ensure all clusters are assigned to at least one lens.\n\n"
+            'Return JSON:\n{"framing_lenses": ['
+            '{"name": "...", "description": "...", "suggested_clusters": [0, 1, 2...]}, ...]}'
+        )
+
+        def _parse_lenses(raw: str) -> dict:
+            if "```" in raw:
+                for part in raw.split("```"):
+                    if part.startswith("json"):
+                        raw = part[4:].strip()
+                        break
+                    elif part.strip().startswith("{"):
+                        raw = part.strip()
+                        break
+            return json.loads(raw)
+
+        content = client.complete(
+            messages=[
+                {"role": "system", "content":
+                 "Expert in public engagement and discourse analysis. Return only valid JSON."},
+                {"role": "user", "content": lens_prompt},
+            ],
+            max_completion_tokens=8000,
+        )
+        suggested_lenses = _parse_lenses(content)
+
+        # Retry for clusters the LLM missed
+        assigned = {
+            cid for lens in suggested_lenses["framing_lenses"]
+            for cid in lens["suggested_clusters"]
+        }
+        uncovered = sorted(set(range(n_clusters)) - assigned)
+        if uncovered:
+            existing_names = [l["name"] for l in suggested_lenses["framing_lenses"]]
+            uncovered_info = [
+                line for line in cluster_info
+                if int(line.split(".")[0]) in set(uncovered)
+            ]
+            retry_prompt = (
+                f"Some {kind_label} clusters were not assigned to any framing lens.\n"
+                f"Existing lens names: {existing_names}\n\n"
+                f"Unassigned clusters:\n" + "\n".join(uncovered_info) + "\n\n"
+                "For each unassigned cluster, add its ID to the most appropriate "
+                "existing lens.\nReturn JSON listing only lenses that need updating:\n"
+                '{"framing_lenses": [{"name": "<existing name>", "description": "...", '
+                '"suggested_clusters": [<new ids only>]}, ...]}'
+            )
+            retry_raw = client.complete(
+                messages=[
+                    {"role": "system", "content":
+                     "Expert in public engagement analysis. Return only valid JSON."},
+                    {"role": "user", "content": retry_prompt},
+                ],
+                max_completion_tokens=4000,
+            )
+            retry_lenses = _parse_lenses(retry_raw)
+            by_name = {l["name"]: l for l in suggested_lenses["framing_lenses"]}
+            for rl in retry_lenses["framing_lenses"]:
+                if rl["name"] in by_name:
+                    by_name[rl["name"]]["suggested_clusters"].extend(rl["suggested_clusters"])
+                else:
+                    suggested_lenses["framing_lenses"].append(rl)
+
+        # Fallback: assign any still-uncovered to the largest lens
+        assigned = {
+            cid for lens in suggested_lenses["framing_lenses"]
+            for cid in lens["suggested_clusters"]
+        }
+        still_uncovered = sorted(set(range(n_clusters)) - assigned)
+        if still_uncovered:
+            fallback = max(
+                suggested_lenses["framing_lenses"],
+                key=lambda l: len(l["suggested_clusters"]),
+            )
+            fallback["suggested_clusters"].extend(still_uncovered)
+
+        return suggested_lenses
+
     def assign_framing_lenses(
         self,
         cluster_exemplars: dict,
@@ -533,105 +660,11 @@ class AddressStage:
             if covered >= set(range(n_clusters)):
                 return cached
 
-        # Build cluster summary text for the prompt
-        cluster_info = []
-        for cluster_id, data in cluster_exemplars.items():
-            cid = int(cluster_id)
-            label = cluster_labels_dict.get(str(cid), {}).get("label", f"Cluster {cid}")
-            desc = cluster_labels_dict.get(str(cid), {}).get("description", "")
-            ctype = "cross-cutting" if data.get("is_cross_cutting") else "tech-specific"
-            cluster_info.append(
-                f"{cid}. {label} ({ctype}, n={data.get('size', 0)}): {desc}"
-            )
-        cluster_summary_text = "\n".join(cluster_info)
-
-        kind_label = "concern" if kind == "concern" else "benefit"
-        lens_prompt = (
-            f"Analyze these {n_clusters} {kind_label} clusters from UK public dialogue reports.\n\n"
-            f"Clusters:\n{cluster_summary_text}\n\n"
-            f"Group these clusters into 8-12 higher-level FRAMING LENSES that capture how "
-            f"publics frame their {kind_label}s.\n\n"
-            "For each lens provide:\n"
-            "1. Name (2-4 words)\n2. Description (1 sentence)\n"
-            "3. List of cluster IDs that belong to this lens\n\n"
-            "A cluster can belong to multiple lenses if appropriate.\n"
-            "Ensure all clusters are assigned to at least one lens.\n\n"
-            'Return JSON:\n{"framing_lenses": ['
-            '{"name": "...", "description": "...", "suggested_clusters": [0, 1, 2...]}, ...]}'
-        )
-
-        def _parse_lenses(raw: str) -> dict:
-            if "```" in raw:
-                for part in raw.split("```"):
-                    if part.startswith("json"):
-                        raw = part[4:].strip()
-                        break
-                    elif part.strip().startswith("{"):
-                        raw = part.strip()
-                        break
-            return json.loads(raw)
-
+        # 3. LLM call — always generates a fresh grouping
         try:
-            content = client.complete(
-                messages=[
-                    {"role": "system", "content":
-                     "Expert in public engagement and discourse analysis. Return only valid JSON."},
-                    {"role": "user", "content": lens_prompt},
-                ],
-                max_completion_tokens=8000,
+            suggested_lenses = self.generate_lens_grouping(
+                cluster_exemplars, cluster_labels_dict, n_clusters, kind, client
             )
-            suggested_lenses = _parse_lenses(content)
-
-            # Retry for clusters the LLM missed
-            assigned = {
-                cid for lens in suggested_lenses["framing_lenses"]
-                for cid in lens["suggested_clusters"]
-            }
-            uncovered = sorted(set(range(n_clusters)) - assigned)
-            if uncovered:
-                existing_names = [l["name"] for l in suggested_lenses["framing_lenses"]]
-                uncovered_info = [
-                    line for line in cluster_info
-                    if int(line.split(".")[0]) in set(uncovered)
-                ]
-                retry_prompt = (
-                    f"Some {kind_label} clusters were not assigned to any framing lens.\n"
-                    f"Existing lens names: {existing_names}\n\n"
-                    f"Unassigned clusters:\n" + "\n".join(uncovered_info) + "\n\n"
-                    "For each unassigned cluster, add its ID to the most appropriate "
-                    "existing lens.\nReturn JSON listing only lenses that need updating:\n"
-                    '{"framing_lenses": [{"name": "<existing name>", "description": "...", '
-                    '"suggested_clusters": [<new ids only>]}, ...]}'
-                )
-                retry_raw = client.complete(
-                    messages=[
-                        {"role": "system", "content":
-                         "Expert in public engagement analysis. Return only valid JSON."},
-                        {"role": "user", "content": retry_prompt},
-                    ],
-                    max_completion_tokens=4000,
-                )
-                retry_lenses = _parse_lenses(retry_raw)
-                by_name = {l["name"]: l for l in suggested_lenses["framing_lenses"]}
-                for rl in retry_lenses["framing_lenses"]:
-                    if rl["name"] in by_name:
-                        by_name[rl["name"]]["suggested_clusters"].extend(rl["suggested_clusters"])
-                    else:
-                        suggested_lenses["framing_lenses"].append(rl)
-
-            # Fallback: assign any still-uncovered to the largest lens
-            assigned = {
-                cid for lens in suggested_lenses["framing_lenses"]
-                for cid in lens["suggested_clusters"]
-            }
-            still_uncovered = sorted(set(range(n_clusters)) - assigned)
-            if still_uncovered:
-                fallback = max(
-                    suggested_lenses["framing_lenses"],
-                    key=lambda l: len(l["suggested_clusters"]),
-                )
-                fallback["suggested_clusters"].extend(still_uncovered)
-
         except Exception as exc:
             logger.error("Error generating framing lenses for kind=%r: %s", kind, exc)
             suggested_lenses = {"framing_lenses": []}
