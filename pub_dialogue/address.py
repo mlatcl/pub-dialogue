@@ -2532,76 +2532,124 @@ def temporal_cluster_frequency(
 # ---------------------------------------------------------------------------
 # Prompt sensitivity analysis (CIP-0008)
 # ---------------------------------------------------------------------------
+#
+# Three prompt variants for concerns and three for benefits, used by
+# run_prompt_sensitivity to measure how much the choice of prompt phrasing
+# affects extraction results.
+#
+# Variant A ("A_current") is the amended headline prompt used by the main
+# pipeline — it points at EXTRACTION_PROMPT / BENEFIT_EXTRACTION_PROMPT
+# defined above. Variants B and C are genuine alternatives:
+#
+#   B ("B_broader")   — Same decontextualisation goal, broader framing
+#                       ("issues, worries, reservations raised" instead of
+#                       "concerns"). Tests whether the specific vocabulary
+#                       of the baseline prompt is doing important work.
+#   C ("C_no_decon")  — Proper prompt with examples and rules, but drops
+#                       the instruction to remove technology-specific
+#                       references. Phrases are extracted in their
+#                       original wording; clustering is left to do the
+#                       abstraction. Tests whether the aggressive
+#                       decontextualisation step is doing important work.
 
-EXTRACTION_PROMPT_B = """Identify the specific anxieties, objections, or reservations expressed \
-in this paragraph.
+EXTRACTION_PROMPT_B = """Identify the issues, worries, or reservations raised by members of the public in this paragraph.
 
 CRITICAL RULES:
 1. Remove ALL technology-specific references (AI, nuclear, genetic, nano, etc.)
-2. Capture the underlying worry that could apply to ANY emerging technology
+2. Capture the underlying worry so it could apply to ANY emerging technology
 3. Keep phrases concise (3-10 words each)
-4. Focus on fears and objections, not factual statements
-5. Do NOT use the words 'public dialogue', 'dialogue', 'engagement',
-   'consultation', or 'participation' in your extracted phrases.
+4. Focus on what worries people. Do not extract from procedural or methodological description of the dialogue itself.
+5. Do NOT use the words 'public dialogue', 'dialogue', 'engagement', 'consultation', or 'participation' in your extracted phrases.
 
 EXAMPLES:
-- "People worried about AI making unfair decisions" → "unfair automated decisions"
-- "Concerns about nuclear waste storage" → "long-term waste storage safety"
-- "Distrust of government handling of genetic data" → "distrust of government data handling"
+- "People felt uneasy about machines making decisions that affect their lives" → "unease at automated decisions"
+- "Worry that waste from this will still be dangerous long after we're gone" → "long-lasting waste risk"
+- "Doubt that regulators would keep pace with change" → "regulatory lag"
+- "Fear this could deepen existing inequalities" → "widening inequality"
+- "Discomfort with data being shared without informed consent" → "data shared without consent"
 
-Return 1-3 concern phrases, one per line. No bullets, no numbering.
+Return 1-5 phrases, one per line. No bullets, no numbering.
+If the paragraph raises no clear public worry, return "NO_CONCERN".
+
+Paragraph:
+{text}"""
+
+EXTRACTION_PROMPT_C = """Extract the public concerns expressed in this paragraph.
+
+CRITICAL RULES:
+1. Keep phrases short (3-10 words each)
+2. Focus on what people are worried about. Do not extract from procedural or methodological description of the dialogue itself.
+3. It is fine to keep the phrase in its original wording, including any references to the specific technology being discussed. Do not attempt to generalise or remove technology names.
+4. Do NOT use the words 'public dialogue', 'dialogue', 'engagement', 'consultation', or 'participation' in your extracted phrases.
+
+EXAMPLES:
+- "People worried about AI making unfair decisions" → "AI making unfair decisions"
+- "Concerns about nuclear waste storage" → "nuclear waste storage"
+- "Distrust of government handling of genetic data" → "distrust of government with genetic data"
+- "Fear that automation will hollow out meaningful work" → "automation hollowing out meaningful work"
+- "Worry that only wealthy people will benefit from gene therapies" → "only wealthy benefit from gene therapies"
+
+Return 1-5 concern phrases, one per line. No bullets, no numbering.
 If the paragraph contains no clear public concern, return "NO_CONCERN".
 
 Paragraph:
 {text}"""
 
-EXTRACTION_PROMPT_C = """List the public concerns in this paragraph. \
-Be concise (3-8 words per phrase). Return one concern per line.
-Return NO_CONCERN if the paragraph expresses no concerns.
-
-Paragraph:
-{text}"""
-
-BENEFIT_EXTRACTION_PROMPT_B = """Identify the hoped-for gains, opportunities, or positive outcomes \
-expressed in this paragraph.
+BENEFIT_EXTRACTION_PROMPT_B = """Identify the hoped-for gains, opportunities, or positive outcomes members of the public raise in this paragraph.
 
 CRITICAL RULES:
 1. Remove ALL technology-specific references (AI, nuclear, genetic, nano, etc.)
-2. Capture the underlying benefit that could apply to ANY emerging technology
+2. Capture the underlying benefit so it could apply to ANY emerging technology
 3. Keep each phrase concise (3-10 words)
-4. Prefer concrete impacts over vague praise
-5. Do NOT include concerns, caveats, or neutral facts
-6. Do NOT use the words 'public dialogue', 'dialogue', 'engagement',
-   'consultation', or 'participation' in your extracted phrases.
+4. Focus on hoped-for gains or positive outcomes. Do not extract from procedural or methodological description of the dialogue itself.
+5. Do NOT include concerns, caveats, or neutral facts unless they clearly express a benefit
+6. Do NOT use the words 'public dialogue', 'dialogue', 'engagement', 'consultation', or 'participation' in your extracted phrases.
 
 EXAMPLES:
-- "AI could help doctors spot cancers earlier" → "earlier disease detection"
-- "Nuclear could provide reliable low-carbon energy" → "reliable low-carbon energy supply"
-- "Robots could take on dangerous tasks" → "reduced human exposure to danger"
+- "Hope that diagnoses would come faster and be more reliable" → "faster more reliable diagnosis"
+- "Optimism that clean power could be produced more cheaply" → "cheaper clean power"
+- "Excitement about dangerous work being done more safely" → "safer dangerous work"
+- "Hope that care could be spread more evenly" → "more equal care"
+- "A sense that people's work could feel meaningful again" → "renewed sense of meaningful work"
 
-Return 1-3 benefit phrases, one per line. No bullets, no numbering.
-If the paragraph contains no clear public benefit, return "NO_BENEFIT".
+Return 1-5 phrases, one per line. No bullets, no numbering.
+If the paragraph raises no clear public benefit, return "NO_BENEFIT".
 
 Paragraph:
 {text}"""
 
-BENEFIT_EXTRACTION_PROMPT_C = """List the public benefits expressed in this paragraph. \
-Be concise (3-8 words per phrase). Return one benefit per line.
-Return NO_BENEFIT if the paragraph expresses no benefits.
+BENEFIT_EXTRACTION_PROMPT_C = """Extract the public benefits expressed in this paragraph.
+
+CRITICAL RULES:
+1. Keep each phrase concise (3-10 words)
+2. Focus on hoped-for gains, opportunities, or positive outcomes. Do not extract from procedural or methodological description of the dialogue itself.
+3. It is fine to keep the phrase in its original wording, including any references to the specific technology being discussed. Do not attempt to generalise or remove technology names.
+4. Do NOT include concerns, caveats, or neutral facts unless they clearly express a benefit
+5. Do NOT use the words 'public dialogue', 'dialogue', 'engagement', 'consultation', or 'participation' in your extracted phrases.
+
+EXAMPLES:
+- "AI could help doctors spot cancers earlier" → "AI spotting cancers earlier"
+- "Nuclear could provide reliable low-carbon energy" → "nuclear providing reliable low-carbon energy"
+- "Robots could take on dangerous tasks" → "robots taking on dangerous tasks"
+- "Gene therapies might treat previously untreatable conditions" → "gene therapies treating untreatable conditions"
+- "Automation could give workers time for more meaningful tasks" → "automation freeing time for meaningful tasks"
+
+Return 1-5 benefit phrases, one per line. No bullets, no numbering.
+If the paragraph contains no clear public benefit, return "NO_BENEFIT".
 
 Paragraph:
 {text}"""
 
 CONCERN_PROMPT_VARIANTS: Dict[str, str] = {
     "A_current": EXTRACTION_PROMPT,
-    "B_paraphrase": EXTRACTION_PROMPT_B,
-    "C_minimal": EXTRACTION_PROMPT_C,
+    "B_broader": EXTRACTION_PROMPT_B,
+    "C_no_decon": EXTRACTION_PROMPT_C,
 }
 
 BENEFIT_PROMPT_VARIANTS: Dict[str, str] = {
     "A_current": BENEFIT_EXTRACTION_PROMPT,
-    "B_paraphrase": BENEFIT_EXTRACTION_PROMPT_B,
-    "C_minimal": BENEFIT_EXTRACTION_PROMPT_C,
+    "B_broader": BENEFIT_EXTRACTION_PROMPT_B,
+    "C_no_decon": BENEFIT_EXTRACTION_PROMPT_C,
 }
 
 
