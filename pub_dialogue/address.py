@@ -492,6 +492,7 @@ class AddressStage:
         n_clusters: int,
         kind: str,
         client,
+        centroids_normalized: "Optional[np.ndarray]" = None,
     ) -> dict:
         """Call the LLM lens-grouping step unconditionally — no cache, no canonical file.
 
@@ -597,18 +598,53 @@ class AddressStage:
                 else:
                     suggested_lenses["framing_lenses"].append(rl)
 
-        # Fallback: assign any still-uncovered to the largest lens
+        # Fallback: assign any still-uncovered clusters to their nearest lens
+        # by cluster-centroid distance. Each lens's "centroid" is the mean of
+        # the normalised centroids of the clusters currently assigned to it.
+        # Falls back to the largest-lens heuristic if centroids are not supplied.
         assigned = {
             cid for lens in suggested_lenses["framing_lenses"]
             for cid in lens["suggested_clusters"]
         }
         still_uncovered = sorted(set(range(n_clusters)) - assigned)
         if still_uncovered:
-            fallback = max(
-                suggested_lenses["framing_lenses"],
-                key=lambda l: len(l["suggested_clusters"]),
-            )
-            fallback["suggested_clusters"].extend(still_uncovered)
+            if centroids_normalized is not None and len(suggested_lenses["framing_lenses"]) > 0:
+                # Compute each lens's centroid as mean of its cluster centroids
+                lens_centroids = []
+                for lens in suggested_lenses["framing_lenses"]:
+                    lens_cids = [c for c in lens["suggested_clusters"] if 0 <= c < n_clusters]
+                    if lens_cids:
+                        lens_centroids.append(centroids_normalized[lens_cids].mean(axis=0))
+                    else:
+                        lens_centroids.append(None)
+                # Assign each uncovered cluster to the lens with the nearest centroid
+                for cid in still_uncovered:
+                    cluster_vec = centroids_normalized[cid]
+                    best_idx = None
+                    best_dist = float("inf")
+                    for i, lc in enumerate(lens_centroids):
+                        if lc is None:
+                            continue
+                        dist = float(np.linalg.norm(cluster_vec - lc))
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_idx = i
+                    if best_idx is not None:
+                        suggested_lenses["framing_lenses"][best_idx]["suggested_clusters"].append(cid)
+                    else:
+                        # No lens has any clusters yet; fall through to largest-lens
+                        fallback = max(
+                            suggested_lenses["framing_lenses"],
+                            key=lambda l: len(l["suggested_clusters"]),
+                        )
+                        fallback["suggested_clusters"].append(cid)
+            else:
+                # No centroids supplied — retain legacy largest-lens fallback
+                fallback = max(
+                    suggested_lenses["framing_lenses"],
+                    key=lambda l: len(l["suggested_clusters"]),
+                )
+                fallback["suggested_clusters"].extend(still_uncovered)
 
         return suggested_lenses
 
@@ -620,6 +656,7 @@ class AddressStage:
         kind: str,
         output_folder: Path,
         client=None,
+        centroids_normalized: "Optional[np.ndarray]" = None,
     ) -> dict:
         """Generate framing-lens assignments via the LLM and persist to disk.
 
@@ -653,7 +690,8 @@ class AddressStage:
         # 2. LLM call — always generates a fresh grouping
         try:
             suggested_lenses = self.generate_lens_grouping(
-                cluster_exemplars, cluster_labels_dict, n_clusters, kind, client
+                cluster_exemplars, cluster_labels_dict, n_clusters, kind, client,
+                centroids_normalized=centroids_normalized,
             )
         except Exception as exc:
             logger.error("Error generating framing lenses for kind=%r: %s", kind, exc)
