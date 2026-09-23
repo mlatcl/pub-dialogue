@@ -791,39 +791,40 @@ CRITICAL RULES:
 1. Remove ALL technology-specific references (AI, nuclear, genetic, nano, etc.)
 2. Extract the underlying concern that could apply to ANY technology
 3. Keep phrases concise (3-10 words each)
-4. Focus on what people are worried about, not factual statements
-5. Do NOT use the words 'public dialogue', 'dialogue', 'engagement',
-   'consultation', or 'participation' in your extracted phrases.
+4. Focus on what people are worried about. Do not extract from procedural or methodological description of the dialogue itself — for example, "participants weighed different concerns" describes the dialogue, not a public concern. A factual statement about the technology can express a concern when the underlying worry is clear (for example, "the waste lasts thousands of years" expresses concern about long-term risk).
+5. Do NOT use the words 'public dialogue', 'dialogue', 'engagement', 'consultation', or 'participation' in your extracted phrases.
 
 EXAMPLES:
 - "People worried about AI making unfair decisions" → "unfair automated decisions"
 - "Concerns about nuclear waste storage" → "long-term waste storage safety"
 - "Distrust of government handling of genetic data" → "distrust of government data handling"
+- "Fear that this will hollow out what makes work meaningful" → "loss of meaningful work"
+- "Worry that only wealthy people will benefit" → "unequal access to benefits"
 
-Return 1-3 concern phrases, one per line. No bullets, no numbering.
+Return 1-5 concern phrases, one per line. No bullets, no numbering.
 If the paragraph contains no clear public concern, return "NO_CONCERN".
 
 Paragraph:
 {text}"""
 
-BENEFIT_EXTRACTION_PROMPT = """Extract the core public BENEFITS (upsides, hoped-for gains, opportunities) \
-from this paragraph.
+BENEFIT_EXTRACTION_PROMPT = """Extract the core public BENEFITS (upsides, hoped-for gains, opportunities) from this paragraph.
 
 CRITICAL RULES:
 1. Remove ALL technology-specific references (AI, nuclear, genetic, nano, etc.)
 2. Extract the underlying benefit that could apply to ANY emerging technology
 3. Keep each benefit phrase concise (3-10 words)
-4. Prefer concrete impacts over vague praise (e.g., "faster diagnosis" not "innovation")
+4. Focus on hoped-for gains, opportunities, or positive outcomes. Do not extract from procedural or methodological description of the dialogue itself.
 5. Do NOT include concerns, caveats, or neutral facts unless they clearly express a benefit
-6. Do NOT use the words 'public dialogue', 'dialogue', 'engagement',
-   'consultation', or 'participation' in your extracted phrases.
+6. Do NOT use the words 'public dialogue', 'dialogue', 'engagement', 'consultation', or 'participation' in your extracted phrases.
 
 EXAMPLES:
 - "AI could help doctors spot cancers earlier" → "earlier disease detection"
 - "Nuclear could provide reliable low-carbon energy" → "reliable low-carbon energy supply"
 - "Robots could take on dangerous tasks" → "reduced human exposure to danger"
+- "It might help even out how well people are looked after" → "more equal quality of care"
+- "It could give people a sense that their work matters again" → "renewed sense of meaningful work"
 
-Return 1-3 benefit phrases, one per line. No bullets, no numbering.
+Return 1-5 benefit phrases, one per line. No bullets, no numbering.
 If the paragraph contains no clear public benefit, return "NO_BENEFIT".
 
 Paragraph:
