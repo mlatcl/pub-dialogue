@@ -648,6 +648,113 @@ class AddressStage:
 
         return suggested_lenses
 
+    def generate_lens_grouping_multi(
+        self,
+        cluster_exemplars: dict,
+        cluster_labels_dict: dict,
+        n_clusters: int,
+        kind: str,
+        client,
+        centroids_normalized: "Optional[np.ndarray]" = None,
+        n_runs: int = 5,
+        output_folder: "Optional[Path]" = None,
+    ) -> Tuple[dict, dict]:
+        """Run generate_lens_grouping N times and report pairwise ARI as a stability diagnostic.
+
+        The first run is returned as the headline mapping; the pairwise ARI across all N
+        runs is written to a diagnostic CSV so the paper can report lens-layer stability
+        transparently. Because the LLM is non-deterministic, repeated calls will produce
+        somewhat different groupings; comparing them tells us how stable the lens
+        structure is.
+
+        Parameters
+        ----------
+        cluster_exemplars:   dict mapping cluster_id → exemplar data
+        cluster_labels_dict: label dict from :meth:`label_clusters`
+        n_clusters:          total number of clusters (for coverage check)
+        kind:                ``'concern'`` or ``'benefit'``
+        client:              LLMClient instance
+        centroids_normalized: optional cluster centroids for nearest-lens fallback
+        n_runs:              number of independent runs (default 5)
+        output_folder:       where to write ``lens_stability_{kind}.csv``. If None,
+                             the diagnostic is not persisted.
+
+        Returns
+        -------
+        Tuple of:
+          - headline mapping (dict) — the first run, used for downstream analysis
+          - stability info (dict) — {"n_runs": N, "pairwise_ari_mean": float,
+            "pairwise_ari_min": float, "pairwise_ari_max": float}
+        """
+        from sklearn.metrics import adjusted_rand_score
+
+        all_runs = []
+        for i in range(n_runs):
+            logger.info("Lens grouping run %d of %d for kind=%r", i + 1, n_runs, kind)
+            try:
+                result = self.generate_lens_grouping(
+                    cluster_exemplars, cluster_labels_dict, n_clusters, kind, client,
+                    centroids_normalized=centroids_normalized,
+                )
+                all_runs.append(result)
+            except Exception as exc:
+                logger.warning("Lens grouping run %d failed: %s", i + 1, exc)
+
+        if not all_runs:
+            raise RuntimeError(f"All {n_runs} lens-grouping runs failed for kind={kind!r}")
+
+        # Convert each run's groupings to a cluster→lens_index array for ARI
+        def _lens_labels(run: dict) -> "np.ndarray":
+            labels = np.full(n_clusters, -1, dtype=int)
+            for lens_idx, lens in enumerate(run["framing_lenses"]):
+                for cid in lens["suggested_clusters"]:
+                    if 0 <= cid < n_clusters and labels[cid] == -1:
+                        labels[cid] = lens_idx
+            return labels
+
+        run_labels = [_lens_labels(r) for r in all_runs]
+
+        # Pairwise ARI
+        pairwise = []
+        for i in range(len(run_labels)):
+            for j in range(i + 1, len(run_labels)):
+                mask = (run_labels[i] != -1) & (run_labels[j] != -1)
+                if mask.sum() >= 2:
+                    ari = adjusted_rand_score(run_labels[i][mask], run_labels[j][mask])
+                    pairwise.append({"run_a": i + 1, "run_b": j + 1, "ari": float(ari)})
+
+        if pairwise:
+            ari_values = [p["ari"] for p in pairwise]
+            stability = {
+                "n_runs": len(all_runs),
+                "pairwise_ari_mean": float(np.mean(ari_values)),
+                "pairwise_ari_min": float(np.min(ari_values)),
+                "pairwise_ari_max": float(np.max(ari_values)),
+            }
+        else:
+            stability = {
+                "n_runs": len(all_runs),
+                "pairwise_ari_mean": float("nan"),
+                "pairwise_ari_min": float("nan"),
+                "pairwise_ari_max": float("nan"),
+            }
+
+        if output_folder is not None and pairwise:
+            output_folder = Path(output_folder)
+            output_folder.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(pairwise).to_csv(
+                output_folder / f"lens_stability_{kind}.csv", index=False
+            )
+            logger.info(
+                "Lens stability for kind=%r: mean ARI=%.3f (min %.3f, max %.3f) across %d runs",
+                kind, stability["pairwise_ari_mean"],
+                stability["pairwise_ari_min"], stability["pairwise_ari_max"],
+                stability["n_runs"],
+            )
+
+        # Return the first run as the headline mapping
+        return all_runs[0], stability
+
     def assign_framing_lenses(
         self,
         cluster_exemplars: dict,
@@ -657,6 +764,7 @@ class AddressStage:
         output_folder: Path,
         client=None,
         centroids_normalized: "Optional[np.ndarray]" = None,
+        n_lens_runs: int = 5,
     ) -> dict:
         """Generate framing-lens assignments via the LLM and persist to disk.
 
@@ -687,12 +795,20 @@ class AddressStage:
             if covered >= set(range(n_clusters)):
                 return cached
 
-        # 2. LLM call — always generates a fresh grouping
+        # 2. LLM call — run once, or N times with pairwise ARI diagnostic
         try:
-            suggested_lenses = self.generate_lens_grouping(
-                cluster_exemplars, cluster_labels_dict, n_clusters, kind, client,
-                centroids_normalized=centroids_normalized,
-            )
+            if n_lens_runs > 1:
+                suggested_lenses, _stability = self.generate_lens_grouping_multi(
+                    cluster_exemplars, cluster_labels_dict, n_clusters, kind, client,
+                    centroids_normalized=centroids_normalized,
+                    n_runs=n_lens_runs,
+                    output_folder=output_folder,
+                )
+            else:
+                suggested_lenses = self.generate_lens_grouping(
+                    cluster_exemplars, cluster_labels_dict, n_clusters, kind, client,
+                    centroids_normalized=centroids_normalized,
+                )
         except Exception as exc:
             logger.error("Error generating framing lenses for kind=%r: %s", kind, exc)
             suggested_lenses = {"framing_lenses": []}
