@@ -534,8 +534,16 @@ class AddressStage:
             "For each lens provide:\n"
             "1. Name (2-4 words)\n2. Description (1 sentence)\n"
             "3. List of cluster IDs that belong to this lens\n\n"
-            "A cluster can belong to multiple lenses if appropriate.\n"
-            "Ensure all clusters are assigned to at least one lens.\n\n"
+            "IMPORTANT: MULTI-LENS MEMBERSHIP IS EXPECTED:\n"
+            "Public concerns and benefits often speak to several framing lenses at once. "
+            "A cluster about 'distrust of corporate data practices', for example, plausibly "
+            "belongs to BOTH a Privacy/Data lens AND a Governance/Accountability lens: "
+            "assign it to both. A cluster about 'unequal access to benefits' plausibly "
+            "belongs to BOTH an Equity lens AND an Economic lens: assign it to both.\n\n"
+            "Assign a cluster to a single lens ONLY when it clearly concerns just that one "
+            "theme. Otherwise, assign it to every lens it substantively touches.\n\n"
+            "As a rough calibration, expect the average cluster to appear in about 1.5 to 2 "
+            "lenses. Every cluster must appear in at least one lens.\n\n"
             'Return JSON:\n{"framing_lenses": ['
             '{"name": "...", "description": "...", "suggested_clusters": [0, 1, 2...]}, ...]}'
         )
@@ -617,27 +625,32 @@ class AddressStage:
                         lens_centroids.append(centroids_normalized[lens_cids].mean(axis=0))
                     else:
                         lens_centroids.append(None)
-                # Assign each uncovered cluster to the lens with the nearest centroid
+                # Assign each uncovered cluster to the TOP-K nearest lenses,
+                # not just the closest one. This mirrors the multi-membership
+                # the prompt encourages, so fallback assignments are not
+                # artificially forced to be single-lens.
+                # K = min(3, half the lenses) — we don't want a cluster to
+                # end up in every lens.
+                top_k = min(3, max(1, len(lens_centroids) // 2))
                 for cid in still_uncovered:
                     cluster_vec = centroids_normalized[cid]
-                    best_idx = None
-                    best_dist = float("inf")
+                    scored = []
                     for i, lc in enumerate(lens_centroids):
                         if lc is None:
                             continue
                         dist = float(np.linalg.norm(cluster_vec - lc))
-                        if dist < best_dist:
-                            best_dist = dist
-                            best_idx = i
-                    if best_idx is not None:
-                        suggested_lenses["framing_lenses"][best_idx]["suggested_clusters"].append(cid)
-                    else:
+                        scored.append((dist, i))
+                    if not scored:
                         # No lens has any clusters yet; fall through to largest-lens
                         fallback = max(
                             suggested_lenses["framing_lenses"],
                             key=lambda l: len(l["suggested_clusters"]),
                         )
                         fallback["suggested_clusters"].append(cid)
+                        continue
+                    scored.sort()
+                    for _dist, lens_idx in scored[:top_k]:
+                        suggested_lenses["framing_lenses"][lens_idx]["suggested_clusters"].append(cid)
             else:
                 # No centroids supplied — retain legacy largest-lens fallback
                 fallback = max(
@@ -703,8 +716,67 @@ class AddressStage:
         if not all_runs:
             raise RuntimeError(f"All {n_runs} lens-grouping runs failed for kind={kind!r}")
 
-        # Convert each run's groupings to a cluster→lens_index array for ARI
-        def _lens_labels(run: dict) -> "np.ndarray":
+        # Build cluster→set-of-lens-names for each run (multi-membership OK)
+        def _cluster_lens_sets(run: dict) -> list:
+            sets = [set() for _ in range(n_clusters)]
+            for lens in run["framing_lenses"]:
+                lname = lens["name"]
+                for cid in lens["suggested_clusters"]:
+                    if 0 <= cid < n_clusters:
+                        sets[cid].add(lname)
+            return sets
+
+        run_sets = [_cluster_lens_sets(r) for r in all_runs]
+
+        # For a pair of runs, we want to know: when two clusters share a lens
+        # in run A, do they also share a lens in run B? This is the natural
+        # "do the runs agree about which clusters belong together?" question,
+        # and it works under multi-membership — unlike ARI, which needs a
+        # single label per cluster.
+        #
+        # We compute, for each pair of runs, the Jaccard similarity between
+        # the two "same-lens co-occurrence" sets:
+        #   pairs_A = { (i, j) : i < j, run A puts i and j in at least one shared lens }
+        #   pairs_B = { (i, j) : i < j, run B puts i and j in at least one shared lens }
+        #   jaccard = |pairs_A ∩ pairs_B| / |pairs_A ∪ pairs_B|
+        # This is 1.0 when the two runs induce exactly the same set of
+        # cluster-cluster co-membership relations, and 0.0 when they induce
+        # disjoint ones. It also reports ONE headline number per pair, so
+        # downstream reporting is unchanged.
+
+        def _co_pairs(sets_by_cid: list) -> set:
+            pairs = set()
+            for i in range(n_clusters):
+                if not sets_by_cid[i]:
+                    continue
+                for j in range(i + 1, n_clusters):
+                    if sets_by_cid[i] & sets_by_cid[j]:
+                        pairs.add((i, j))
+            return pairs
+
+        run_co_pairs = [_co_pairs(s) for s in run_sets]
+
+        # Pairwise Jaccard between co-membership relations
+        pairwise = []
+        for i in range(len(run_co_pairs)):
+            for j in range(i + 1, len(run_co_pairs)):
+                pa, pb = run_co_pairs[i], run_co_pairs[j]
+                union = pa | pb
+                if not union:
+                    continue
+                jacc = len(pa & pb) / len(union)
+                pairwise.append({
+                    "run_a": i + 1,
+                    "run_b": j + 1,
+                    "jaccard_co_membership": float(jacc),
+                    "n_pairs_run_a": len(pa),
+                    "n_pairs_run_b": len(pb),
+                })
+
+        # Also record the ORIGINAL hard-partition ARI for backwards
+        # comparability with earlier reports: coerce each cluster to its
+        # first-listed lens, exactly as the previous stability measure did.
+        def _lens_labels_hard(run: dict) -> "np.ndarray":
             labels = np.full(n_clusters, -1, dtype=int)
             for lens_idx, lens in enumerate(run["framing_lenses"]):
                 for cid in lens["suggested_clusters"]:
@@ -712,28 +784,52 @@ class AddressStage:
                         labels[cid] = lens_idx
             return labels
 
-        run_labels = [_lens_labels(r) for r in all_runs]
-
-        # Pairwise ARI
-        pairwise = []
-        for i in range(len(run_labels)):
-            for j in range(i + 1, len(run_labels)):
-                mask = (run_labels[i] != -1) & (run_labels[j] != -1)
-                if mask.sum() >= 2:
-                    ari = adjusted_rand_score(run_labels[i][mask], run_labels[j][mask])
-                    pairwise.append({"run_a": i + 1, "run_b": j + 1, "ari": float(ari)})
+        run_labels_hard = [_lens_labels_hard(r) for r in all_runs]
+        for row in pairwise:
+            i = row["run_a"] - 1
+            j = row["run_b"] - 1
+            mask = (run_labels_hard[i] != -1) & (run_labels_hard[j] != -1)
+            if mask.sum() >= 2:
+                row["hard_ari_legacy"] = float(
+                    adjusted_rand_score(
+                        run_labels_hard[i][mask], run_labels_hard[j][mask]
+                    )
+                )
+            else:
+                row["hard_ari_legacy"] = float("nan")
 
         if pairwise:
-            ari_values = [p["ari"] for p in pairwise]
+            jacc_values = [p["jaccard_co_membership"] for p in pairwise]
+            ari_values = [
+                p["hard_ari_legacy"] for p in pairwise
+                if not (isinstance(p["hard_ari_legacy"], float)
+                        and p["hard_ari_legacy"] != p["hard_ari_legacy"])
+            ]
             stability = {
                 "n_runs": len(all_runs),
-                "pairwise_ari_mean": float(np.mean(ari_values)),
-                "pairwise_ari_min": float(np.min(ari_values)),
-                "pairwise_ari_max": float(np.max(ari_values)),
+                # Headline: soft-membership co-occurrence agreement.
+                "pairwise_jaccard_mean": float(np.mean(jacc_values)),
+                "pairwise_jaccard_min": float(np.min(jacc_values)),
+                "pairwise_jaccard_max": float(np.max(jacc_values)),
+                # For continuity with earlier reports.
+                "pairwise_ari_legacy_mean": float(np.mean(ari_values)) if ari_values else float("nan"),
+                "pairwise_ari_legacy_min": float(np.min(ari_values)) if ari_values else float("nan"),
+                "pairwise_ari_legacy_max": float(np.max(ari_values)) if ari_values else float("nan"),
+                # Kept under the old key so anything upstream that reads
+                # "pairwise_ari_mean" still works — points at the soft measure.
+                "pairwise_ari_mean": float(np.mean(jacc_values)),
+                "pairwise_ari_min": float(np.min(jacc_values)),
+                "pairwise_ari_max": float(np.max(jacc_values)),
             }
         else:
             stability = {
                 "n_runs": len(all_runs),
+                "pairwise_jaccard_mean": float("nan"),
+                "pairwise_jaccard_min": float("nan"),
+                "pairwise_jaccard_max": float("nan"),
+                "pairwise_ari_legacy_mean": float("nan"),
+                "pairwise_ari_legacy_min": float("nan"),
+                "pairwise_ari_legacy_max": float("nan"),
                 "pairwise_ari_mean": float("nan"),
                 "pairwise_ari_min": float("nan"),
                 "pairwise_ari_max": float("nan"),
