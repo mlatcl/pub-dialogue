@@ -842,9 +842,12 @@ class AddressStage:
                 output_folder / f"lens_stability_{kind}.csv", index=False
             )
             logger.info(
-                "Lens stability for kind=%r: mean ARI=%.3f (min %.3f, max %.3f) across %d runs",
-                kind, stability["pairwise_ari_mean"],
-                stability["pairwise_ari_min"], stability["pairwise_ari_max"],
+                "Lens stability for kind=%r: mean Jaccard co-membership=%.3f "
+                "(min %.3f, max %.3f); legacy hard-partition ARI mean=%.3f "
+                "across %d runs",
+                kind, stability["pairwise_jaccard_mean"],
+                stability["pairwise_jaccard_min"], stability["pairwise_jaccard_max"],
+                stability["pairwise_ari_legacy_mean"],
                 stability["n_runs"],
             )
 
