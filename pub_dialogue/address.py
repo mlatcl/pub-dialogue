@@ -835,21 +835,34 @@ class AddressStage:
                 "pairwise_ari_max": float("nan"),
             }
 
-        if output_folder is not None and pairwise:
+            if output_folder is not None:
             output_folder = Path(output_folder)
             output_folder.mkdir(parents=True, exist_ok=True)
-            pd.DataFrame(pairwise).to_csv(
-                output_folder / f"lens_stability_{kind}.csv", index=False
-            )
-            logger.info(
-                "Lens stability for kind=%r: mean Jaccard co-membership=%.3f "
-                "(min %.3f, max %.3f); legacy hard-partition ARI mean=%.3f "
-                "across %d runs",
-                kind, stability["pairwise_jaccard_mean"],
-                stability["pairwise_jaccard_min"], stability["pairwise_jaccard_max"],
-                stability["pairwise_ari_legacy_mean"],
-                stability["n_runs"],
-            )
+            # Save per-run mappings so downstream analyses (σ² sweep) can load them
+            prefix = "benefit_" if kind == "benefit" else ""
+            for i, run_result in enumerate(all_runs):
+                run_mapping = {}
+                for lens in run_result["framing_lenses"]:
+                    run_mapping[lens["name"]] = {
+                        "description": lens["description"],
+                        "cluster_ids": lens["suggested_clusters"],
+                    }
+                run_path = output_folder / f"{prefix}framing_lens_mappings_run_{i+1}.json"
+                with open(run_path, "w") as f:
+                    json.dump(run_mapping, f, indent=2)
+            if pairwise:
+                pd.DataFrame(pairwise).to_csv(
+                    output_folder / f"lens_stability_{kind}.csv", index=False
+                )
+                logger.info(
+                    "Lens stability for kind=%r: mean ARI=%.3f (min %.3f, max %.3f) across %d runs; "
+                    "saved %d per-run mappings",
+                    kind, stability["pairwise_ari_mean"],
+                    stability["pairwise_ari_min"], stability["pairwise_ari_max"],
+                    stability["n_runs"], len(all_runs),
+                )
+            else:
+                logger.info("Saved %d per-run lens mappings for kind=%r", len(all_runs), kind)
 
         # Return the first run as the headline mapping
         return all_runs[0], stability
@@ -930,11 +943,201 @@ class AddressStage:
         )
         return mappings
 
+
+    # -------------------------------------------------------------------
+    # Soft-membership mixture weights via PPCA (Oct 2026)
+    # -------------------------------------------------------------------
+
+    def load_per_run_mappings(
+        self,
+        kind: str,
+        n_runs: int = 5,
+        output_folder: "Optional[Path]" = None,
+    ) -> list:
+        """Load the N per-run framing-lens mappings saved by generate_lens_grouping_multi.
+
+        Parameters
+        ----------
+        kind:          'concern' or 'benefit'
+        n_runs:        number of per-run mapping files to load (default 5)
+        output_folder: directory where the mapping files were saved
+                       (defaults to ``self.access.output_folder``)
+
+        Returns
+        -------
+        list of mapping dicts, one per run.
+        """
+        out = Path(output_folder) if output_folder is not None else self.access.output_folder
+        prefix = "benefit_" if kind == "benefit" else ""
+        mappings = []
+        for i in range(n_runs):
+            path = out / f"{prefix}framing_lens_mappings_run_{i+1}.json"
+            if not path.exists():
+                raise FileNotFoundError(
+                    f"Expected per-run mapping file not found: {path}. "
+                    f"Re-run the Identify {kind} framing lenses cell to regenerate."
+                )
+            mappings.append(json.loads(path.read_text()))
+        return mappings
+
+    def sigma2_sweep_select(
+        self,
+        centroids: "np.ndarray",
+        mappings_list: list,
+        sigma2_grid: "Optional[np.ndarray]" = None,
+        kind: "Optional[str]" = None,
+        output_folder: "Optional[Path]" = None,
+    ) -> dict:
+        """Sweep σ² and select the stability-optimal value for PPCA soft lens memberships.
+
+        For each σ² value, compute per-cluster mixture weights (Bayes posteriors
+        under PPCA Gaussians with shared σ²) for each run, then pairwise mean
+        Earth Mover's Distance across runs. Select σ²* that minimises mean EMD
+        subject to a meaningful-soft constraint (effective support in
+        [0.2, 0.6] × n_lenses).
+
+        Parameters
+        ----------
+        centroids    : (n_clusters, d) normalised cluster centroids
+        mappings_list: list of lens-mapping dicts, one per run (e.g. from load_per_run_mappings)
+        sigma2_grid  : array of σ² values to sweep (default: 25 log-spaced points 1e-4 to 1e+2)
+        kind         : 'concern' or 'benefit' (for file naming when persisting)
+        output_folder: optional path to write stability curve + mixture weights
+
+        Returns
+        -------
+        dict with keys:
+            curve           : list of per-σ² summary dicts
+            sigma2_best     : chosen σ²*
+            emd_best        : mean EMD at σ²*
+            eff_support_best: mean effective support at σ²*
+            mixture_weights : list of (n_clusters, n_lenses_r) arrays at σ²*, one per run
+            lens_names      : list of lens-name lists at σ²*, one per run
+            selection       : which rule picked σ²* ('constrained' or 'unconstrained ...')
+            low_cap, high_cap: the eff_support constraint bounds
+        """
+        if sigma2_grid is None:
+            sigma2_grid = np.logspace(-4, 2, 25)
+        n_lens_avg = float(np.mean([len(m) for m in mappings_list]))
+        low_cap, high_cap = 0.2 * n_lens_avg, 0.6 * n_lens_avg
+
+        curve = []
+        all_results_per_sigma = []
+        for sigma2 in sigma2_grid:
+            posteriors_runs, lens_means_runs = [], []
+            diagnostics = []
+            for mapping in mappings_list:
+                post, _ = compute_mixture_weights(centroids, mapping, float(sigma2))
+                lens_names = list(mapping.keys())
+                means = np.zeros((len(lens_names), centroids.shape[1]))
+                for i, name in enumerate(lens_names):
+                    cids = mapping[name]["cluster_ids"]
+                    if cids:
+                        means[i] = centroids[cids].mean(axis=0)
+                posteriors_runs.append(post)
+                lens_means_runs.append(means)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    lp = np.where(post > 0, np.log(post), 0.0)
+                entropy_vec = -(post * lp).sum(axis=1)
+                max_post = post.max(axis=1)
+                diagnostics.append({
+                    "mean_eff_support": float(np.exp(entropy_vec).mean()),
+                    "frac_hard_95": float((max_post > 0.95).mean()),
+                    "frac_soft_50": float((max_post < 0.50).mean()),
+                })
+            mean_eff = float(np.mean([d["mean_eff_support"] for d in diagnostics]))
+            frac_hard = float(np.mean([d["frac_hard_95"] for d in diagnostics]))
+            frac_soft = float(np.mean([d["frac_soft_50"] for d in diagnostics]))
+            emd_info = pairwise_mean_emd(posteriors_runs, lens_means_runs)
+            curve.append({
+                "sigma2": float(sigma2),
+                "mean_eff_support": mean_eff,
+                "frac_max_post_above_95": frac_hard,
+                "frac_max_post_below_50": frac_soft,
+                "mean_emd": emd_info["overall_mean_emd"],
+                "median_emd": emd_info["overall_median_emd"],
+            })
+            all_results_per_sigma.append((posteriors_runs, lens_means_runs))
+
+        # σ² selection: min EMD within meaningful-soft zone, otherwise warn + global min
+        constrained = [
+            (i, r) for i, r in enumerate(curve)
+            if low_cap < r["mean_eff_support"] < high_cap
+        ]
+        if constrained:
+            best_idx = min(constrained, key=lambda x: x[1]["mean_emd"])[0]
+            selection = "constrained"
+        else:
+            best_idx = min(range(len(curve)), key=lambda i: curve[i]["mean_emd"])
+            selection = "unconstrained (no σ² in meaningful-soft zone)"
+            logger.warning(
+                "No σ² gives eff_support in (%.1f, %.1f); using unconstrained min",
+                low_cap, high_cap,
+            )
+
+        best = curve[best_idx]
+        posteriors_runs, lens_means_runs = all_results_per_sigma[best_idx]
+        lens_names_runs = [list(m.keys()) for m in mappings_list]
+
+        logger.info(
+            "σ² sweep (%s): selected σ²=%g (%s), mean EMD=%.4f, eff_support=%.2f",
+            kind or "unknown", best["sigma2"], selection,
+            best["mean_emd"], best["mean_eff_support"],
+        )
+
+        if output_folder is not None and kind is not None:
+            output_folder = Path(output_folder)
+            output_folder.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(curve).to_csv(
+                output_folder / f"stability_curve_{kind}.csv", index=False
+            )
+            prefix = "benefit_" if kind == "benefit" else ""
+            # Save per-run mixture weights at σ²*
+            for i, post in enumerate(posteriors_runs):
+                np.save(
+                    output_folder / f"{prefix}mixture_weights_run_{i+1}.npy",
+                    post,
+                )
+                (output_folder / f"{prefix}mixture_lens_names_run_{i+1}.json").write_text(
+                    json.dumps(lens_names_runs[i])
+                )
+            # Headline (run 1) mixture weights for downstream convenience
+            np.save(output_folder / f"{prefix}mixture_weights.npy", posteriors_runs[0])
+            (output_folder / f"{prefix}mixture_lens_names.json").write_text(
+                json.dumps(lens_names_runs[0])
+            )
+
+        return {
+            "curve": curve,
+            "sigma2_best": best["sigma2"],
+            "emd_best": best["mean_emd"],
+            "eff_support_best": best["mean_eff_support"],
+            "mixture_weights": posteriors_runs,
+            "lens_names": lens_names_runs,
+            "selection": selection,
+            "low_cap": low_cap,
+            "high_cap": high_cap,
+        }
+  
     # -------------------------------------------------------------------
     # Convenience façade — delegate to module-level analysis helpers
     # (allows notebooks to use _address.xxx() throughout)
     # -------------------------------------------------------------------
 
+    def compute_mixture_weights(
+        self, centroids, lens_mapping, sigma2, prior="uniform"
+    ):
+        """Delegate to module-level :func:`compute_mixture_weights`."""
+        return compute_mixture_weights(centroids, lens_mapping, sigma2, prior)
+
+    def pairwise_mean_emd(self, posteriors_runs, lens_means_runs):
+        """Delegate to module-level :func:`pairwise_mean_emd`."""
+        return pairwise_mean_emd(posteriors_runs, lens_means_runs)
+
+    def fit_lens_ppca(self, member_centroids, sigma2):
+        """Delegate to module-level :func:`fit_lens_ppca`."""
+        return fit_lens_ppca(member_centroids, sigma2)    
+  
     def volume_table(self, df: "pd.DataFrame", kind: str) -> "pd.DataFrame":
         """Delegate to module-level :func:`volume_table`."""
         return volume_table(df, kind)
@@ -1018,6 +1221,159 @@ class AddressStage:
             tech_col=tc,
         )
 
+# ---------------------------------------------------------------------------
+# PPCA soft-membership helpers (Oct 2026)
+# ---------------------------------------------------------------------------
+
+def fit_lens_ppca(member_centroids: "np.ndarray", sigma2: float) -> dict:
+    """Fit a PPCA Gaussian to one lens's member cluster centroids.
+
+    The Gaussian has covariance Σ = W Wᵀ + σ² I where W is a low-rank factor
+    loading matrix. Factors with eigenvalue > σ² are retained (ARD-style
+    truncation); others are discarded as noise. Each lens's effective
+    dimensionality falls out of this truncation.
+
+    Parameters
+    ----------
+    member_centroids: (m, d) array of this lens's member cluster centroids
+    sigma2:           shared noise variance (hyperparameter)
+
+    Returns
+    -------
+    dict with keys: mu, U_q, lambdas_q, log_det, q
+    """
+    m, d = member_centroids.shape
+    mu = member_centroids.mean(axis=0)
+    X = member_centroids - mu
+    if m < 2:
+        return {"mu": mu, "U_q": np.zeros((d, 0)), "lambdas_q": np.zeros(0),
+                "log_det": d * np.log(sigma2), "q": 0}
+    _, s, Vt = np.linalg.svd(X, full_matrices=False)
+    lambdas = (s ** 2) / m
+    retain = lambdas > sigma2
+    q = int(retain.sum())
+    U_q = Vt[retain].T
+    lambdas_q = lambdas[retain]
+    log_det = (float(np.sum(np.log(lambdas_q))) +
+               (d - q) * float(np.log(sigma2)))
+    return {"mu": mu, "U_q": U_q, "lambdas_q": lambdas_q,
+            "log_det": log_det, "q": q}
+
+
+def log_likelihood_ppca(centroids: "np.ndarray", lens_fit: dict, sigma2: float) -> "np.ndarray":
+    """Log p(cluster | lens) under a PPCA Gaussian, up to a shared constant.
+
+    Uses Σ⁻¹ = U_q diag(1/λ_i) U_qᵀ + (1/σ²)(I − U_q U_qᵀ):
+        Mahalanobis² = Σᵢ vᵢ²/λᵢ + ||residual||²/σ²
+    where v = U_qᵀ (c − μ) and residual is the orthogonal complement.
+    """
+    mu, U_q, lambdas_q, log_det = (
+        lens_fit["mu"], lens_fit["U_q"],
+        lens_fit["lambdas_q"], lens_fit["log_det"],
+    )
+    diff = centroids - mu
+    if U_q.size > 0:
+        v = diff @ U_q
+        projected_sq = (v ** 2 / lambdas_q[None, :]).sum(axis=1)
+        residual_sq = (diff ** 2).sum(axis=1) - (v ** 2).sum(axis=1)
+    else:
+        projected_sq = np.zeros(diff.shape[0])
+        residual_sq = (diff ** 2).sum(axis=1)
+    mahalanobis_sq = projected_sq + residual_sq / sigma2
+    return -0.5 * mahalanobis_sq - 0.5 * log_det
+
+
+def compute_mixture_weights(
+    centroids: "np.ndarray",
+    lens_mapping: dict,
+    sigma2: float,
+    prior: str = "uniform",
+) -> Tuple["np.ndarray", list]:
+    """Per-cluster mixture weights over lenses via PPCA Bayes posteriors.
+
+    Parameters
+    ----------
+    centroids   : (n_clusters, d) normalised cluster centroids
+    lens_mapping: ``{lens_name: {"cluster_ids": [...]}}`` dict
+    sigma2      : shared noise variance
+    prior       : 'uniform' or 'proportional' (to member count)
+
+    Returns
+    -------
+    (mixture_weights, lens_names):
+        mixture_weights: (n_clusters, n_lenses), rows sum to 1
+        lens_names:      list of lens names in column order
+    """
+    lens_names = list(lens_mapping.keys())
+    n_clusters = centroids.shape[0]
+    log_lik = np.zeros((n_clusters, len(lens_names)))
+    counts = np.zeros(len(lens_names), dtype=int)
+    for j, name in enumerate(lens_names):
+        cids = lens_mapping[name]["cluster_ids"]
+        counts[j] = len(cids)
+        if not cids:
+            log_lik[:, j] = -np.inf
+            continue
+        fit = fit_lens_ppca(centroids[cids], sigma2)
+        log_lik[:, j] = log_likelihood_ppca(centroids, fit, sigma2)
+
+    if prior == "proportional" and counts.sum() > 0:
+        log_prior = np.log(counts / counts.sum())
+    else:
+        log_prior = np.zeros(len(lens_names))
+    log_post = log_lik + log_prior[None, :]
+    log_post -= log_post.max(axis=1, keepdims=True)
+    post = np.exp(log_post)
+    post /= post.sum(axis=1, keepdims=True)
+    return post, lens_names
+
+
+def _cosine_distance_matrix(X: "np.ndarray", Y: "np.ndarray") -> "np.ndarray":
+    """Pairwise cosine distance between rows of X and rows of Y."""
+    X_n = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-12)
+    Y_n = Y / (np.linalg.norm(Y, axis=1, keepdims=True) + 1e-12)
+    return 1.0 - X_n @ Y_n.T
+
+
+def pairwise_mean_emd(posteriors_runs: list, lens_means_runs: list) -> dict:
+    """Mean Earth Mover's Distance between runs' per-cluster mixture distributions.
+
+    For each pair of runs, for each cluster: EMD between the two runs' mixture
+    distributions over their respective lens sets, with ground metric = cosine
+    distance between lens means across the two runs.
+
+    Returns dict with overall_mean_emd, overall_median_emd, pairs.
+    """
+    try:
+        import ot
+    except ImportError as exc:
+        raise ImportError(
+            "The 'pot' library is required for EMD. Install: pip install -q pot"
+        ) from exc
+
+    n_runs = len(posteriors_runs)
+    n_clusters = posteriors_runs[0].shape[0]
+    pair_rows = []
+    all_emds = []
+    for i in range(n_runs):
+        for j in range(i + 1, n_runs):
+            cost = _cosine_distance_matrix(lens_means_runs[i], lens_means_runs[j])
+            emds = []
+            for c in range(n_clusters):
+                a = np.maximum(posteriors_runs[i][c], 0.0); a /= a.sum()
+                b = np.maximum(posteriors_runs[j][c], 0.0); b /= b.sum()
+                emds.append(float(ot.emd2(a, b, cost)))
+            pair_rows.append({
+                "run_a": i + 1,
+                "run_b": j + 1,
+                "mean_emd": float(np.mean(emds)),
+            })
+            all_emds.extend(emds)
+    return {
+        "overall_mean_emd": float(np.mean(all_emds)) if all_emds else float("nan"),
+        "overall_median_emd": float(np.median(all_emds)) if all_emds else float("nan"),
+        "pairs": pair_rows,
+    }
 
 DEFAULT_TECH_WORDS: List[str] = [
     "ai", "artificial intelligence", "nuclear", "genetic", "nano",
