@@ -1030,8 +1030,10 @@ class AddressStage:
                 post, _ = compute_mixture_weights(centroids, mapping, float(sigma2))
                 lens_names = list(mapping.keys())
                 means = np.zeros((len(lens_names), centroids.shape[1]))
+                _n_clust = centroids.shape[0]
                 for i, name in enumerate(lens_names):
-                    cids = mapping[name]["cluster_ids"]
+                    raw_cids = mapping[name]["cluster_ids"]
+                    cids = [c for c in raw_cids if 0 <= c < _n_clust]
                     if cids:
                         means[i] = centroids[cids].mean(axis=0)
                 posteriors_runs.append(post)
@@ -1309,7 +1311,9 @@ def compute_mixture_weights(
     log_lik = np.zeros((n_clusters, len(lens_names)))
     counts = np.zeros(len(lens_names), dtype=int)
     for j, name in enumerate(lens_names):
-        cids = lens_mapping[name]["cluster_ids"]
+        raw_cids = lens_mapping[name]["cluster_ids"]
+        # Defensive: drop hallucinated cluster ids outside the valid range
+        cids = [c for c in raw_cids if 0 <= c < n_clusters]
         counts[j] = len(cids)
         if not cids:
             log_lik[:, j] = -np.inf
