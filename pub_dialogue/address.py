@@ -835,7 +835,7 @@ class AddressStage:
                 "pairwise_ari_max": float("nan"),
             }
 
-            if output_folder is not None:
+        if output_folder is not None:
             output_folder = Path(output_folder)
             output_folder.mkdir(parents=True, exist_ok=True)
             # Save per-run mappings so downstream analyses (σ² sweep) can load them
