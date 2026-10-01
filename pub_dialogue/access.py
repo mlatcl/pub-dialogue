@@ -461,7 +461,7 @@ def load_artifacts(output_folder: Path, checkpoint_folder: Path) -> dict:
             return json.load(_f)
 
     a["concern_centroids"]          = _load_npy(ckpt / "cluster_centroids.npy")
-    a["benefit_centroids"]          = _load_npy(ckpt / "benefit_cluster_centroids.npy")
+    a["benefit_centroids"]          = _load_npy(ckpt / "cluster_centroids_benefit.npy")
     a["cluster_summary_df"]         = _load_csv(out  / "cluster_summary.csv")
     a["benefit_cluster_summary_df"] = _load_csv(out  / "benefit_cluster_summary.csv")
 
