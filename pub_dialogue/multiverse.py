@@ -189,25 +189,29 @@ def ell_R1_cross_cutting_share(
     return cross_cutting / len(cluster_entropy)
 
 
-def ell_R2_top_ai_pp(
+def ell_R2_max_pp_gap(
     phrases_df: pd.DataFrame,
     mixture_weights: np.ndarray,
     tech_col: str = "technology_meta",
     baseline: str = "tech_weighted",
 ) -> float:
-    """AI-vs-nonAI pp difference on the lens with the highest AI share."""
-    pw, valid = _phrase_weights(phrases_df, mixture_weights)
+    """Largest AI-vs-nonAI pp difference across any lens.
+
+    Positive values → AI is over-indexed on some lens by this many
+    percentage points, vs the chosen non-AI baseline. The identity of
+    the most distinctive lens may differ across configurations — this
+    is the multiverse-appropriate framing: the magnitude of the
+    distinctiveness claim, not a specific lens.
+    """
+    _pw, valid = _phrase_weights(phrases_df, mixture_weights)
     tech_arr = phrases_df.loc[valid, tech_col].to_numpy()
-    ai_mask = tech_arr == "AI"
-    if ai_mask.sum() == 0:
+    if (tech_arr == "AI").sum() == 0:
         return float("nan")
 
-    ai_shares = pw[ai_mask].mean(axis=0)
-    top_lens_idx = int(np.argmax(ai_shares))
     pp_diffs = compute_ai_vs_nonai_pp(
         phrases_df, mixture_weights, tech_col=tech_col, baseline=baseline
     )
-    return float(pp_diffs[top_lens_idx])
+    return float(pp_diffs.max())
 
 
 def ell_R3_entropy_stability(
@@ -640,7 +644,7 @@ def run_configuration(
     row["ell_R1"] = ell_R1_cross_cutting_share(
         bundle["cluster_entropy"], config.threshold, bundle["n_techs"]
     )
-    row["ell_R2"] = ell_R2_top_ai_pp(
+    row["ell_R2"] = ell_R2_max_pp_gap(
         bundle["concerns_df"], mixture_weights, baseline=config.baseline
     )
     row["ell_R3"] = ell_R3_entropy_stability(bundle["concerns_df"])
