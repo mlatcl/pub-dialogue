@@ -1,0 +1,724 @@
+"""Multiverse analysis for the public dialogue paper.
+
+Produces the Cartesian product of defensible analytical choices and
+evaluates each configuration against the three headline findings
+(R1 shared structure; R2 AI distinctiveness; R3 temporal stability).
+
+Dimensions (cheap — no additional LLM calls, reuse existing artifacts):
+  - lens_run_idx : 1..N (reuses ``outputs/framing_lens_mappings_run_*.json``)
+  - sigma2_rule  : alternative selection rules on the stability curve
+  - baseline     : tech-weighted vs doc-weighted non-AI baseline (R2 only)
+  - threshold    : cross-cutting entropy threshold (R1 only)
+
+Dimensions (modest extra cost — one-time setup via ``prepare_k_variant``):
+  - k : 60, 75, 90 (reclusters existing embeddings at new k, regenerates
+                    lens mappings and σ² sweep; prompt stays V0)
+
+Dimensions (expensive — require full re-extraction, stubbed):
+  - prompt : V0, V1, V3 (would need the whole corpus re-extracted under
+                         each prompt variant; currently only V0 is supported)
+
+Evaluation functions (ℓ):
+  - ell_R1 : fraction of concern clusters that are cross-cutting
+  - ell_R2 : AI-vs-non-AI pp difference on the top-AI-salient lens
+  - ell_R3 : standard deviation of normalised AI concern entropy across
+             four time windows (smaller = more "stable spread")
+
+No knowledge of specific lens names, cluster labels, or paper findings
+is baked into this module.
+"""
+
+from __future__ import annotations
+
+import itertools
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Callable
+
+import numpy as np
+import pandas as pd
+from scipy.stats import entropy as scipy_entropy
+
+
+# =============================================================================
+# Configuration dataclass
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class MultiverseConfig:
+    """One point in the multiverse — a choice for each analytical dimension."""
+
+    k: int = 75
+    prompt: str = "V0"
+    lens_run_idx: int = 1
+    sigma2_rule: str = "min_emd"
+    baseline: str = "tech_weighted"
+    threshold: float = 0.5
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+# =============================================================================
+# Enumeration
+# =============================================================================
+
+
+def enumerate_configurations(dimensions: dict[str, list]) -> list[MultiverseConfig]:
+    """Build the full Cartesian product of a dimensions dict."""
+    keys = list(dimensions.keys())
+    value_lists = [dimensions[k] for k in keys]
+    configs: list[MultiverseConfig] = []
+    for combo in itertools.product(*value_lists):
+        kwargs = dict(zip(keys, combo))
+        configs.append(MultiverseConfig(**kwargs))
+    return configs
+
+
+# =============================================================================
+# σ² selection rules
+# =============================================================================
+
+
+def select_sigma2_min_emd(stability_curve: pd.DataFrame) -> float:
+    """Pick σ² at the row with minimum mean EMD."""
+    idx = stability_curve["mean_emd"].idxmin()
+    return float(stability_curve.loc[idx, "sigma2"])
+
+
+def select_sigma2_min_emd_support_cap(
+    stability_curve: pd.DataFrame, support_cap: float = 2.0
+) -> float:
+    """Pick σ² at the min-EMD row subject to effective-support ≥ ``support_cap``."""
+    if "mean_eff_support" not in stability_curve.columns:
+        return select_sigma2_min_emd(stability_curve)
+    constrained = stability_curve[stability_curve["mean_eff_support"] >= support_cap]
+    if constrained.empty:
+        return select_sigma2_min_emd(stability_curve)
+    idx = constrained["mean_emd"].idxmin()
+    return float(constrained.loc[idx, "sigma2"])
+
+
+def select_sigma2_median(stability_curve: pd.DataFrame) -> float:
+    """Median σ² value in the stability curve — a weak alternative baseline."""
+    return float(stability_curve["sigma2"].median())
+
+
+SIGMA2_RULES: dict[str, Callable[[pd.DataFrame], float]] = {
+    "min_emd": select_sigma2_min_emd,
+    "min_emd_support_cap": select_sigma2_min_emd_support_cap,
+    "median": select_sigma2_median,
+}
+
+
+# =============================================================================
+# Soft-weight helpers
+# =============================================================================
+
+
+def _phrase_weights(
+    phrases_df: pd.DataFrame,
+    mixture_weights: np.ndarray,
+    cluster_id_col: str = "cluster_id",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return per-phrase soft weights and the mask of rows used."""
+    valid = (phrases_df[cluster_id_col] >= 0) & (
+        phrases_df[cluster_id_col] < mixture_weights.shape[0]
+    )
+    cids = phrases_df.loc[valid, cluster_id_col].to_numpy(dtype=int)
+    return mixture_weights[cids], valid.to_numpy()
+
+
+def compute_ai_vs_nonai_pp(
+    phrases_df: pd.DataFrame,
+    mixture_weights: np.ndarray,
+    tech_col: str = "technology_meta",
+    baseline: str = "tech_weighted",
+) -> np.ndarray:
+    """Return per-lens AI vs non-AI pp difference under the chosen baseline."""
+    pw, valid = _phrase_weights(phrases_df, mixture_weights)
+    tech_arr = phrases_df.loc[valid, tech_col].to_numpy()
+
+    ai_mask = tech_arr == "AI"
+    non_ai_mask = ~ai_mask
+
+    n_lenses = mixture_weights.shape[1]
+    ai_shares = pw[ai_mask].mean(axis=0) if ai_mask.sum() > 0 else np.zeros(n_lenses)
+
+    if baseline == "doc_weighted":
+        nonai_shares = (
+            pw[non_ai_mask].mean(axis=0)
+            if non_ai_mask.sum() > 0
+            else np.zeros(n_lenses)
+        )
+    elif baseline == "tech_weighted":
+        non_ai_techs = sorted(set(tech_arr[non_ai_mask].tolist()))
+        tech_means = [
+            pw[tech_arr == tech].mean(axis=0)
+            for tech in non_ai_techs
+            if (tech_arr == tech).sum() > 0
+        ]
+        nonai_shares = (
+            np.mean(tech_means, axis=0) if tech_means else np.zeros(n_lenses)
+        )
+    else:
+        raise ValueError(f"Unknown baseline: {baseline!r}")
+
+    return (ai_shares - nonai_shares) * 100.0  # percentage points
+
+
+# =============================================================================
+# Headline evaluation functions ℓ_R1, ℓ_R2, ℓ_R3
+# =============================================================================
+
+
+def ell_R1_cross_cutting_share(
+    cluster_entropy: dict[int, float] | dict[str, float],
+    threshold: float,
+    n_techs: int,
+) -> float:
+    """Fraction of concern clusters that are cross-cutting at a given threshold."""
+    if not cluster_entropy:
+        return float("nan")
+    max_ent = float(np.log(n_techs)) if n_techs > 1 else 1.0
+    cross_cutting = sum(
+        1 for _, ent in cluster_entropy.items() if (ent / max_ent) >= threshold
+    )
+    return cross_cutting / len(cluster_entropy)
+
+
+def ell_R2_top_ai_pp(
+    phrases_df: pd.DataFrame,
+    mixture_weights: np.ndarray,
+    tech_col: str = "technology_meta",
+    baseline: str = "tech_weighted",
+) -> float:
+    """AI-vs-nonAI pp difference on the lens with the highest AI share."""
+    pw, valid = _phrase_weights(phrases_df, mixture_weights)
+    tech_arr = phrases_df.loc[valid, tech_col].to_numpy()
+    ai_mask = tech_arr == "AI"
+    if ai_mask.sum() == 0:
+        return float("nan")
+
+    ai_shares = pw[ai_mask].mean(axis=0)
+    top_lens_idx = int(np.argmax(ai_shares))
+    pp_diffs = compute_ai_vs_nonai_pp(
+        phrases_df, mixture_weights, tech_col=tech_col, baseline=baseline
+    )
+    return float(pp_diffs[top_lens_idx])
+
+
+def ell_R3_entropy_stability(
+    phrases_df: pd.DataFrame,
+    tech_col: str = "technology_meta",
+    window_fn: Callable[[int], str] | None = None,
+) -> float:
+    """Standard deviation of normalised AI concern entropy across time windows."""
+    if window_fn is None:
+        from pub_dialogue.address import assign_window
+
+        window_fn = assign_window
+
+    ai_df = phrases_df[phrases_df[tech_col] == "AI"].copy()
+    if ai_df.empty or "year" not in ai_df.columns:
+        return float("nan")
+    ai_df["time_window"] = ai_df["year"].apply(window_fn)
+    ai_df = ai_df.dropna(subset=["time_window"])
+
+    entropies: list[float] = []
+    for _, group in ai_df.groupby("time_window"):
+        cluster_counts = group["cluster_id"].value_counts()
+        if len(cluster_counts) <= 1 or cluster_counts.sum() == 0:
+            continue
+        probs = (cluster_counts / cluster_counts.sum()).values
+        raw_ent = float(scipy_entropy(probs))
+        norm_ent = raw_ent / float(np.log(len(cluster_counts)))
+        entropies.append(norm_ent)
+
+    if len(entropies) < 2:
+        return float("nan")
+    return float(np.std(entropies))
+
+
+# =============================================================================
+# One-time setup: prepare k-variant artifacts (k != 75, prompt == V0)
+# =============================================================================
+
+
+def prepare_k_variant(
+    k: int,
+    output_folder: Path,
+    checkpoint_folder: Path,
+    address_stage: Any,
+    access_stage: Any,
+    client: Any,
+    n_lens_runs: int = 5,
+    source_prompt: str = "V0",
+    overwrite: bool = False,
+) -> Path:
+    """One-time setup: run the clustering + lens pipeline at a non-canonical k.
+
+    Reuses the canonical concern-phrase extraction (prompt='V0') but re-clusters
+    the existing embeddings at the specified k and regenerates all downstream
+    artifacts (cluster labels, exemplars, cluster entropy, N lens mappings,
+    σ² sweep). Writes everything to:
+
+        ``{output_folder}/multiverse_sources/k{k}_{source_prompt}/``
+        ``{checkpoint_folder}/multiverse_sources/k{k}_{source_prompt}/``
+
+    Only ``source_prompt='V0'`` is supported — other prompt variants would
+    require full corpus re-extraction, which is out of scope for this helper.
+
+    Parameters
+    ----------
+    k:
+        New number of concern clusters.
+    output_folder, checkpoint_folder:
+        The canonical top-level folders; subfolders are created under each.
+    address_stage:
+        An ``AddressStage`` instance; its ``n_concern_clusters`` attribute is
+        temporarily patched to ``k`` for the duration of this call.
+    access_stage:
+        An ``AccessStage`` instance (used to load canonical artifacts).
+    client:
+        LLMClient — needed for cluster labelling and lens generation.
+    n_lens_runs:
+        Number of independent LLM lens-grouping runs to feed the σ² sweep.
+    source_prompt:
+        Which prompt variant's phrase extraction to reuse (currently only "V0").
+    overwrite:
+        If False (default) and the per-k subfolder already contains the key
+        artifacts, skip the setup. If True, re-run.
+
+    Returns
+    -------
+    The ``Path`` of the per-k output subfolder.
+    """
+    from sklearn.cluster import KMeans
+    from sklearn.metrics.pairwise import cosine_similarity
+    from sklearn.preprocessing import normalize
+    from scipy.stats import entropy as _entropy
+
+    if source_prompt != "V0":
+        raise NotImplementedError(
+            "prepare_k_variant currently only supports source_prompt='V0'. "
+            "Other prompt variants would require full corpus re-extraction."
+        )
+
+    output_folder = Path(output_folder)
+    checkpoint_folder = Path(checkpoint_folder)
+    out_sub = output_folder / "multiverse_sources" / f"k{k}_{source_prompt}"
+    ckpt_sub = checkpoint_folder / "multiverse_sources" / f"k{k}_{source_prompt}"
+    out_sub.mkdir(parents=True, exist_ok=True)
+    ckpt_sub.mkdir(parents=True, exist_ok=True)
+
+    # Short-circuit if already prepared
+    key_files = [
+        ckpt_sub / "cluster_centroids.npy",
+        out_sub / "stability_curve_concern.csv",
+        out_sub / "framing_lens_mappings_run_1.json",
+    ]
+    if not overwrite and all(f.exists() for f in key_files):
+        print(f"[k={k}] already prepared at {out_sub} — skipping (set overwrite=True to force)")
+        return out_sub
+
+    print(f"[k={k}] preparing variant at {out_sub}")
+
+    # --- 1. Load canonical artifacts (concern phrases + embeddings) ---
+    artifacts = access_stage.load_artifacts()
+    concerns_df = artifacts["concerns_df"].copy()
+    if "technology_meta" not in concerns_df.columns:
+        _tech = artifacts["chunks_df"][["chunk_id", "technology_meta"]]
+        concerns_df = concerns_df.merge(_tech, on="chunk_id", how="left")
+    concern_embeddings = artifacts["concern_embeddings"]
+
+    # --- 2. KMeans at k ---
+    print(f"[k={k}] clustering embeddings...")
+    embeddings_normalized = normalize(concern_embeddings)
+    km = KMeans(
+        n_clusters=k,
+        random_state=getattr(address_stage, "random_seed", 42),
+        n_init="auto",
+    )
+    cluster_assignments = km.fit_predict(embeddings_normalized)
+    centroids_normalized = normalize(km.cluster_centers_)
+    concerns_df["cluster_id"] = cluster_assignments
+
+    np.save(ckpt_sub / "cluster_centroids.npy", centroids_normalized)
+    concerns_df.to_csv(out_sub / "extracted_concerns.csv", index=False)
+
+    # --- 3. Cluster entropy by technology ---
+    cluster_entropy: dict[int, float] = {}
+    for cid in range(k):
+        mask = concerns_df["cluster_id"] == cid
+        if mask.sum() == 0:
+            cluster_entropy[cid] = 0.0
+            continue
+        probs = concerns_df.loc[mask, "technology_meta"].value_counts(normalize=True)
+        cluster_entropy[cid] = float(_entropy(probs.values))
+
+    with open(out_sub / "cluster_entropy.json", "w") as f:
+        json.dump(
+            {"raw": {str(k_): v for k_, v in cluster_entropy.items()}},
+            f,
+            indent=2,
+        )
+
+    # --- 4. Extract per-cluster exemplars (for cluster labelling) ---
+    print(f"[k={k}] extracting exemplars...")
+    N_EXEMPLARS = 8
+    cluster_exemplars: dict[int, dict[str, Any]] = {}
+    for cid in range(k):
+        mask = concerns_df["cluster_id"] == cid
+        if mask.sum() == 0:
+            continue
+        cluster_concerns = concerns_df[mask]
+        cluster_embs = embeddings_normalized[mask.to_numpy()]
+        centroid = centroids_normalized[cid]
+        sims = cosine_similarity(cluster_embs, centroid.reshape(1, -1)).flatten()
+        top = np.argsort(sims)[-N_EXEMPLARS:][::-1]
+        exemplars = []
+        for idx in top:
+            row = cluster_concerns.iloc[idx]
+            exemplars.append(
+                {
+                    "concern": row["concern"],
+                    "technology": row.get("technology", row.get("technology_meta", "")),
+                    "year": int(row["year"]) if pd.notna(row.get("year")) else None,
+                    "similarity": float(sims[idx]),
+                }
+            )
+        tech_dist = (
+            cluster_concerns.get("technology", cluster_concerns["technology_meta"])
+            .value_counts()
+            .head(3)
+            .to_dict()
+        )
+        max_ent_norm = float(np.log(concerns_df["technology_meta"].nunique()))
+        cluster_exemplars[cid] = {
+            "size": int(mask.sum()),
+            "entropy": cluster_entropy[cid] / max_ent_norm if max_ent_norm > 0 else 0.0,
+            "is_cross_cutting": (cluster_entropy[cid] / max_ent_norm) >= 0.5
+            if max_ent_norm > 0
+            else False,
+            "top_technologies": tech_dist,
+            "exemplars": exemplars,
+        }
+
+    with open(out_sub / "cluster_exemplars.json", "w") as f:
+        json.dump(cluster_exemplars, f, indent=2, default=str)
+
+    # --- 5. Patch address_stage to use the new k, then label and lens-gen ---
+    original_k = getattr(address_stage, "n_concern_clusters", None)
+    try:
+        address_stage.n_concern_clusters = k
+
+        print(f"[k={k}] labelling clusters (LLM)...")
+        cluster_labels_dict = address_stage.label_clusters(
+            cluster_exemplars,
+            kind="concern",
+            output_folder=out_sub,
+            client=client,
+        )
+
+        print(f"[k={k}] generating {n_lens_runs} lens mappings (LLM)...")
+        _, _stability = address_stage.generate_lens_grouping_multi(
+            cluster_exemplars,
+            cluster_labels_dict,
+            k,
+            "concern",
+            client,
+            centroids_normalized=centroids_normalized,
+            n_runs=n_lens_runs,
+            output_folder=out_sub,
+        )
+
+        print(f"[k={k}] loading per-run mappings and running σ² sweep...")
+        per_run_mappings = address_stage.load_per_run_mappings(
+            "concern", n_runs=n_lens_runs, output_folder=out_sub
+        )
+        address_stage.sigma2_sweep_select(
+            centroids=centroids_normalized,
+            mappings_list=per_run_mappings,
+            kind="concern",
+            output_folder=out_sub,
+        )
+    finally:
+        if original_k is not None:
+            address_stage.n_concern_clusters = original_k
+
+    print(f"[k={k}] done. Artifacts at {out_sub}")
+    return out_sub
+
+
+# =============================================================================
+# Pipeline artifact loader (parameterised by k, prompt)
+# =============================================================================
+
+
+def load_pipeline_artifacts(
+    k: int,
+    prompt: str,
+    output_folder: Path,
+    checkpoint_folder: Path,
+    load_artifacts_fn: Callable | None = None,
+) -> dict[str, Any]:
+    """Load the per-(k, prompt) artifact bundle for one configuration.
+
+    - (k=75, V0): reads canonical artifacts via ``load_artifacts_fn``.
+    - (k∈{60, 90}, V0): reads from ``outputs/multiverse_sources/k{k}_V0/``
+      (populated via :func:`prepare_k_variant`).
+    - Other (k, prompt) pairs: raises :class:`NotImplementedError`.
+
+    Returns
+    -------
+    Dict with keys ``concerns_df``, ``centroids``, ``per_run_mappings``,
+    ``stability_curve``, ``cluster_entropy``, ``n_techs``.
+    """
+    output_folder = Path(output_folder)
+    checkpoint_folder = Path(checkpoint_folder)
+
+    if k == 75 and prompt == "V0":
+        return _load_baseline_artifacts(
+            output_folder, checkpoint_folder, load_artifacts_fn
+        )
+
+    if prompt == "V0" and k in (60, 90):
+        subdir_out = output_folder / "multiverse_sources" / f"k{k}_{prompt}"
+        subdir_ckpt = checkpoint_folder / "multiverse_sources" / f"k{k}_{prompt}"
+        if not subdir_out.exists() or not (subdir_ckpt / "cluster_centroids.npy").exists():
+            raise FileNotFoundError(
+                f"No prepared artifacts for k={k}, prompt='{prompt}' at "
+                f"{subdir_out}. Run multiverse.prepare_k_variant(k={k}, ...) "
+                "first to generate them."
+            )
+        return _load_variant_artifacts(subdir_out, subdir_ckpt, output_folder)
+
+    raise NotImplementedError(
+        f"Expensive dimension (k={k}, prompt={prompt!r}) not yet wired up. "
+        "Prompt variants other than 'V0' would require full re-extraction "
+        "of the corpus."
+    )
+
+
+def _load_baseline_artifacts(
+    output_folder: Path,
+    checkpoint_folder: Path,
+    load_artifacts_fn: Callable | None,
+) -> dict[str, Any]:
+    """Baseline artifact bundle at k=75, prompt=V0 (what 01a currently produces)."""
+    if load_artifacts_fn is None:
+        from pub_dialogue.access import load_artifacts as load_artifacts_fn  # type: ignore
+
+    artifacts = load_artifacts_fn(output_folder, checkpoint_folder)
+
+    concerns_df = artifacts["concerns_df"].copy()
+    if "technology_meta" not in concerns_df.columns:
+        _tech = artifacts["chunks_df"][["chunk_id", "technology_meta"]]
+        concerns_df = concerns_df.merge(_tech, on="chunk_id", how="left")
+
+    centroids_path = checkpoint_folder / "cluster_centroids.npy"
+    if "concern_centroids" in artifacts:
+        centroids = artifacts["concern_centroids"]
+    else:
+        centroids = np.load(centroids_path)
+
+    run_files = sorted(output_folder.glob("framing_lens_mappings_run_*.json"))
+    per_run_mappings: list[dict] = []
+    for p in run_files:
+        with open(p) as f:
+            per_run_mappings.append(json.load(f))
+
+    stability_curve = pd.read_csv(output_folder / "stability_curve_concern.csv")
+
+    cluster_entropy_raw = artifacts.get("cluster_entropy", {})
+    cluster_entropy = {int(k_): float(v) for k_, v in cluster_entropy_raw.items()}
+
+    n_techs = int(concerns_df["technology_meta"].nunique())
+
+    return {
+        "concerns_df": concerns_df,
+        "centroids": centroids,
+        "per_run_mappings": per_run_mappings,
+        "stability_curve": stability_curve,
+        "cluster_entropy": cluster_entropy,
+        "n_techs": n_techs,
+    }
+
+
+def _load_variant_artifacts(
+    subdir_out: Path,
+    subdir_ckpt: Path,
+    canonical_output_folder: Path,
+) -> dict[str, Any]:
+    """Per-k artifact bundle (populated by :func:`prepare_k_variant`)."""
+    # Concerns re-saved with new cluster_id by prepare_k_variant
+    concerns_df = pd.read_csv(subdir_out / "extracted_concerns.csv")
+
+    centroids = np.load(subdir_ckpt / "cluster_centroids.npy")
+
+    run_files = sorted(subdir_out.glob("framing_lens_mappings_run_*.json"))
+    per_run_mappings: list[dict] = []
+    for p in run_files:
+        with open(p) as f:
+            per_run_mappings.append(json.load(f))
+
+    stability_curve = pd.read_csv(subdir_out / "stability_curve_concern.csv")
+
+    with open(subdir_out / "cluster_entropy.json") as f:
+        entropy_dict = json.load(f)
+    raw = entropy_dict.get("raw", entropy_dict)
+    cluster_entropy = {int(k_): float(v) for k_, v in raw.items()}
+
+    n_techs = int(concerns_df["technology_meta"].nunique())
+
+    return {
+        "concerns_df": concerns_df,
+        "centroids": centroids,
+        "per_run_mappings": per_run_mappings,
+        "stability_curve": stability_curve,
+        "cluster_entropy": cluster_entropy,
+        "n_techs": n_techs,
+    }
+
+
+# =============================================================================
+# Run one configuration
+# =============================================================================
+
+
+def run_configuration(
+    config: MultiverseConfig,
+    bundle: dict[str, Any],
+    compute_mixture_weights_fn: Callable,
+) -> dict[str, Any]:
+    """Evaluate one configuration against the three ℓ functions."""
+    row: dict[str, Any] = config.as_dict()
+
+    sigma2_fn = SIGMA2_RULES[config.sigma2_rule]
+    sigma2 = sigma2_fn(bundle["stability_curve"])
+    row["sigma2"] = sigma2
+
+    mappings = bundle["per_run_mappings"]
+    if not mappings:
+        raise RuntimeError("No per-run lens mappings in the artifact bundle.")
+    if not (1 <= config.lens_run_idx <= len(mappings)):
+        raise ValueError(
+            f"lens_run_idx {config.lens_run_idx} out of range 1..{len(mappings)}"
+        )
+    mapping = mappings[config.lens_run_idx - 1]
+
+    result = compute_mixture_weights_fn(
+        bundle["centroids"], mapping, sigma2, prior="uniform"
+    )
+    if isinstance(result, tuple):
+        mixture_weights, lens_names = result
+    else:
+        mixture_weights = result
+        lens_names = list(mapping.keys())
+    row["n_lenses"] = len(lens_names)
+
+    row["ell_R1"] = ell_R1_cross_cutting_share(
+        bundle["cluster_entropy"], config.threshold, bundle["n_techs"]
+    )
+    row["ell_R2"] = ell_R2_top_ai_pp(
+        bundle["concerns_df"], mixture_weights, baseline=config.baseline
+    )
+    row["ell_R3"] = ell_R3_entropy_stability(bundle["concerns_df"])
+
+    return row
+
+
+def run_multiverse(
+    configs: list[MultiverseConfig],
+    output_folder: Path,
+    checkpoint_folder: Path,
+    compute_mixture_weights_fn: Callable,
+    load_artifacts_fn: Callable | None = None,
+    progress: bool = True,
+) -> pd.DataFrame:
+    """Evaluate every configuration in ``configs`` and return a results frame."""
+    if progress:
+        try:
+            from tqdm.auto import tqdm as _tqdm  # type: ignore
+        except ImportError:
+            def _tqdm(xs, **_):
+                return xs
+    else:
+        def _tqdm(xs, **_):
+            return xs
+
+    bundle_cache: dict[tuple[int, str], dict[str, Any]] = {}
+    rows: list[dict[str, Any]] = []
+    for cfg in _tqdm(configs, desc="multiverse"):
+        key = (cfg.k, cfg.prompt)
+        if key not in bundle_cache:
+            bundle_cache[key] = load_pipeline_artifacts(
+                cfg.k,
+                cfg.prompt,
+                output_folder,
+                checkpoint_folder,
+                load_artifacts_fn=load_artifacts_fn,
+            )
+        row = run_configuration(cfg, bundle_cache[key], compute_mixture_weights_fn)
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+# =============================================================================
+# Variance decomposition
+# =============================================================================
+
+
+def variance_decomposition(
+    results_df: pd.DataFrame,
+    metric: str,
+    dimensions: list[str],
+) -> pd.DataFrame:
+    """One-way variance share per dimension — first-cut diagnostic.
+
+    Shares do not sum to 1 in the presence of interactions. Use Sobol
+    indices or a full ANOVA for rigorous attribution.
+    """
+    y = results_df[metric].to_numpy(dtype=float)
+    y = y[~np.isnan(y)]
+    if y.size == 0:
+        return pd.DataFrame({"dimension": dimensions, "variance_share": np.nan})
+    grand_mean = float(y.mean())
+    total_ss = float(((y - grand_mean) ** 2).sum())
+
+    # Protect against floating-point noise: if the metric is effectively
+    # constant across the multiverse, treat total variance as zero rather
+    # than dividing by near-zero and getting spurious variance shares.
+    noise_floor = 1e-10 * (abs(grand_mean) + 1e-12)
+    if total_ss <= noise_floor:
+        return pd.DataFrame(
+            {"dimension": dimensions, "variance_share": [0.0] * len(dimensions)}
+        )
+
+    shares = {}
+    for dim in dimensions:
+        if dim not in results_df.columns:
+            shares[dim] = float("nan")
+            continue
+        between_ss = 0.0
+        for _, group in results_df.groupby(dim):
+            vals = group[metric].dropna().to_numpy(dtype=float)
+            if vals.size == 0:
+                continue
+            between_ss += vals.size * (float(vals.mean()) - grand_mean) ** 2
+        shares[dim] = between_ss / total_ss
+
+    return (
+        pd.DataFrame(
+            {
+                "dimension": dimensions,
+                "variance_share": [shares[d] for d in dimensions],
+            }
+        )
+        .sort_values("variance_share", ascending=False)
+        .reset_index(drop=True)
+    )
