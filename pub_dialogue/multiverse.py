@@ -434,11 +434,28 @@ def prepare_k_variant(
             n_runs=n_lens_runs,
             output_folder=out_sub,
         )
-
+      
         print(f"[k={k}] loading per-run mappings and running σ² sweep...")
-        per_run_mappings = address_stage.load_per_run_mappings(
-            "concern", n_runs=n_lens_runs, output_folder=out_sub
+        # Glob for the mappings that actually got saved — some runs may have
+        # failed (e.g. LLM-returned JSON with C-style comments that Python
+        # can't parse). generate_lens_grouping_multi catches those as warnings
+        # but can leave gaps in the numbered sequence, which would make the
+        # strict load_per_run_mappings error out.
+        run_files = sorted(
+            out_sub.glob("framing_lens_mappings_run_*.json"),
+            key=lambda p: int(p.stem.rsplit("_", 1)[-1]),
         )
+        if not run_files:
+            raise RuntimeError(
+                f"[k={k}] no lens-grouping runs succeeded — cannot proceed"
+            )
+        if len(run_files) < n_lens_runs:
+            print(
+                f"[k={k}] WARNING: only {len(run_files)}/{n_lens_runs} "
+                f"lens-grouping runs succeeded; proceeding with those."
+            )
+        per_run_mappings = [json.loads(p.read_text()) for p in run_files]
+
         address_stage.sigma2_sweep_select(
             centroids=centroids_normalized,
             mappings_list=per_run_mappings,
