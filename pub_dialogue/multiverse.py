@@ -578,7 +578,8 @@ def prepare_prompt_variant(
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = {
                 executor.submit(
-                    extract_phrases_fn, row, "concern", client, prompt_variant=prompt
+                    extract_phrases_fn, row, "concern", client,
+                    prompt_template=CONCERN_PROMPT_VARIANTS[prompt],
                 ): row[1]["chunk_id"]
                 for row in chunks_df.iterrows()
             }
