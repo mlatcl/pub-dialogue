@@ -1533,7 +1533,7 @@ def extract_phrases(
     max_tokens: int = 500,
     max_retries: int = 5,
     prompt_template: Optional[str] = None,    
-) -> ExtractionResult::
+) -> ExtractionResult:
     """Extract decontextualised concern or benefit phrases from one paragraph.
 
     Parameters

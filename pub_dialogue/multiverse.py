@@ -748,7 +748,7 @@ def load_pipeline_artifacts(
             output_folder, checkpoint_folder, load_artifacts_fn
         )
 
-    if prompt == "V0" and k in (60, 90):
+    if (prompt == "V0" and k in (60, 90)) or (k == 75 and prompt == "C_no_decon"):
         subdir_out = output_folder / "multiverse_sources" / f"k{k}_{prompt}"
         subdir_ckpt = checkpoint_folder / "multiverse_sources" / f"k{k}_{prompt}"
         if not subdir_out.exists() or not (subdir_ckpt / "cluster_centroids.npy").exists():
