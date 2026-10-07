@@ -35,6 +35,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
+from pub_dialogue.address import CONCERN_PROMPT_VARIANTS
 
 import numpy as np
 import pandas as pd
@@ -748,7 +749,7 @@ def load_pipeline_artifacts(
             output_folder, checkpoint_folder, load_artifacts_fn
         )
 
-    if (prompt == "V0" and k in (60, 90)) or (k == 75 and prompt == "C_no_decon"):
+    if (prompt == "V0" and k in (60, 90)) or (k == 75 and prompt in ("C_no_decon", "B_broader")):
         subdir_out = output_folder / "multiverse_sources" / f"k{k}_{prompt}"
         subdir_ckpt = checkpoint_folder / "multiverse_sources" / f"k{k}_{prompt}"
         if not subdir_out.exists() or not (subdir_ckpt / "cluster_centroids.npy").exists():
