@@ -1532,7 +1532,8 @@ def extract_phrases(
     tech_words: Optional[List[str]] = None,
     max_tokens: int = 500,
     max_retries: int = 5,
-) -> ExtractionResult:
+    prompt_template: Optional[str] = None,    
+) -> ExtractionResult::
     """Extract decontextualised concern or benefit phrases from one paragraph.
 
     Parameters
@@ -1565,7 +1566,8 @@ def extract_phrases(
     _, row = row_tuple
     chunk_id = row["chunk_id"]
     sentinel = "NO_CONCERN" if kind == "concern" else "NO_BENEFIT"
-    prompt_template = EXTRACTION_PROMPT if kind == "concern" else BENEFIT_EXTRACTION_PROMPT
+    if prompt_template is None:
+        prompt_template = EXTRACTION_PROMPT if kind == "concern" else BENEFIT_EXTRACTION_PROMPT
     system_msg = (
         "Extract public concerns. Be concise. Remove technology-specific language."
         if kind == "concern"
