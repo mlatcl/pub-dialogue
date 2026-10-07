@@ -473,6 +473,247 @@ def prepare_k_variant(
     print(f"[k={k}] done. Artifacts at {out_sub}")
     return out_sub
 
+def prepare_prompt_variant(
+    prompt: str,
+    k: int,
+    output_folder: Path,
+    checkpoint_folder: Path,
+    address_stage: Any,
+    access_stage: Any,
+    client: Any,
+    n_lens_runs: int = 5,
+    overwrite: bool = False,
+    extract_phrases_fn: Callable | None = None,
+    get_embeddings_batch_fn: Callable | None = None,
+) -> Path:
+    """One-time setup: run the full extraction + clustering + lens pipeline
+    at a non-canonical (prompt, k) point.
+
+    Re-extracts concern phrases from all chunks under the specified prompt
+    variant, re-embeds, re-clusters at k, labels, generates N lens groupings,
+    and runs σ² sweep. Writes to
+    ``{output_folder}/multiverse_sources/k{k}_{prompt}/``.
+
+    For (prompt='V0'), delegates to :func:`prepare_k_variant` (no extraction
+    needed; reuses the canonical corpus).
+
+    Parameters
+    ----------
+    prompt:
+        Prompt variant name (``"V0"``, ``"V1"``, or ``"V3"`` — must match the
+        variants defined in your extraction code).
+    k:
+        Number of concern clusters.
+    extract_phrases_fn:
+        Optional override for the phrase-extraction function. Defaults to
+        ``pub_dialogue.utils.extract_phrases``. Must accept
+        ``(row, kind, client, prompt_variant=...)`` and return an object with
+        ``.chunk_id`` and ``.retained_phrases`` attributes.
+    get_embeddings_batch_fn:
+        Optional override for the embedding batcher. Defaults to
+        ``pub_dialogue.utils.get_embeddings_batch``.
+    """
+    from sklearn.cluster import KMeans
+    from sklearn.metrics.pairwise import cosine_similarity
+    from sklearn.preprocessing import normalize
+    from scipy.stats import entropy as _entropy
+
+    # V0 delegates to the k-only variant (no re-extraction)
+    if prompt == "V0":
+        return prepare_k_variant(
+            k=k,
+            output_folder=output_folder,
+            checkpoint_folder=checkpoint_folder,
+            address_stage=address_stage,
+            access_stage=access_stage,
+            client=client,
+            n_lens_runs=n_lens_runs,
+            source_prompt="V0",
+            overwrite=overwrite,
+        )
+
+    if extract_phrases_fn is None:
+        from pub_dialogue.utils import extract_phrases as extract_phrases_fn  # type: ignore
+    if get_embeddings_batch_fn is None:
+        from pub_dialogue.utils import get_embeddings_batch as get_embeddings_batch_fn  # type: ignore
+
+    output_folder = Path(output_folder)
+    checkpoint_folder = Path(checkpoint_folder)
+    out_sub = output_folder / "multiverse_sources" / f"k{k}_{prompt}"
+    ckpt_sub = checkpoint_folder / "multiverse_sources" / f"k{k}_{prompt}"
+    out_sub.mkdir(parents=True, exist_ok=True)
+    ckpt_sub.mkdir(parents=True, exist_ok=True)
+
+    # Short-circuit if already prepared
+    key_files = [
+        ckpt_sub / "cluster_centroids.npy",
+        out_sub / "stability_curve_concern.csv",
+        out_sub / "framing_lens_mappings_run_1.json",
+    ]
+    if not overwrite and all(f.exists() for f in key_files):
+        print(f"[prompt={prompt}, k={k}] already prepared at {out_sub} — skipping")
+        return out_sub
+
+    print(f"[prompt={prompt}, k={k}] preparing variant at {out_sub}")
+
+    # --- 1. Load chunks ---
+    artifacts = access_stage.load_artifacts()
+    chunks_df = artifacts["chunks_df"].copy()
+
+    # --- 2. Re-extract concern phrases under the new prompt ---
+    extracted_path = out_sub / "extracted_concerns.csv"
+    if extracted_path.exists() and not overwrite:
+        print(f"[prompt={prompt}] loading cached extractions from {extracted_path}")
+        concerns_df = pd.read_csv(extracted_path)
+    else:
+        print(f"[prompt={prompt}] extracting from {len(chunks_df)} chunks (LLM)...")
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        try:
+            from tqdm.auto import tqdm as _tqdm  # type: ignore
+        except ImportError:
+            def _tqdm(x, **_):
+                return x
+
+        all_concerns: dict[str, list] = {}
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {
+                executor.submit(
+                    extract_phrases_fn, row, "concern", client, prompt_variant=prompt
+                ): row[1]["chunk_id"]
+                for row in chunks_df.iterrows()
+            }
+            for fut in _tqdm(as_completed(futures), total=len(futures), desc=f"Extracting ({prompt})"):
+                res = fut.result()
+                all_concerns[res.chunk_id] = res.retained_phrases
+
+        concern_rows = []
+        for chunk_id, phrases in all_concerns.items():
+            meta_row = chunks_df[chunks_df["chunk_id"] == chunk_id].iloc[0]
+            for concern in phrases:
+                concern_rows.append({
+                    "chunk_id": chunk_id,
+                    "concern": concern,
+                    "technology_meta": meta_row.get("technology_meta", ""),
+                    "year": int(meta_row["year"]) if pd.notna(meta_row.get("year")) else None,
+                    "source_file": meta_row.get("source_file", ""),
+                })
+        concerns_df = pd.DataFrame(concern_rows)
+        concerns_df["concern_id"] = [f"concern_{i}" for i in range(len(concerns_df))]
+        concerns_df.to_csv(extracted_path, index=False)
+
+    # --- 3. Embed ---
+    embeddings_path = ckpt_sub / "concern_embeddings.npy"
+    if embeddings_path.exists() and not overwrite:
+        print(f"[prompt={prompt}] loading cached embeddings from {embeddings_path}")
+        concern_embeddings = np.load(embeddings_path)
+    else:
+        print(f"[prompt={prompt}] embedding {len(concerns_df)} phrases...")
+        texts = concerns_df["concern"].tolist()
+        all_emb = []
+        BATCH = 100
+        for i in range(0, len(texts), BATCH):
+            all_emb.append(get_embeddings_batch_fn(texts[i : i + BATCH], client))
+        concern_embeddings = np.vstack(all_emb)
+        np.save(embeddings_path, concern_embeddings)
+
+    # --- 4. KMeans + 5-7: entropy, exemplars, label, lens-gen, σ² sweep ---
+    # (Everything below mirrors prepare_k_variant — same structure)
+    print(f"[prompt={prompt}, k={k}] clustering...")
+    embeddings_normalized = normalize(concern_embeddings)
+    km = KMeans(
+        n_clusters=k,
+        random_state=getattr(address_stage, "random_seed", 42),
+        n_init="auto",
+    )
+    cluster_assignments = km.fit_predict(embeddings_normalized)
+    centroids_normalized = normalize(km.cluster_centers_)
+    concerns_df["cluster_id"] = cluster_assignments
+
+    np.save(ckpt_sub / "cluster_centroids.npy", centroids_normalized)
+    concerns_df.to_csv(extracted_path, index=False)
+
+    cluster_entropy = {}
+    for cid in range(k):
+        mask = concerns_df["cluster_id"] == cid
+        if mask.sum() == 0:
+            cluster_entropy[cid] = 0.0
+            continue
+        probs = concerns_df.loc[mask, "technology_meta"].value_counts(normalize=True)
+        cluster_entropy[cid] = float(_entropy(probs.values))
+    with open(out_sub / "cluster_entropy.json", "w") as f:
+        json.dump({"raw": {str(cid): v for cid, v in cluster_entropy.items()}}, f, indent=2)
+
+    print(f"[prompt={prompt}, k={k}] extracting exemplars...")
+    N_EXEMPLARS = 8
+    cluster_exemplars = {}
+    for cid in range(k):
+        mask = concerns_df["cluster_id"] == cid
+        if mask.sum() == 0:
+            continue
+        cluster_concerns = concerns_df[mask]
+        cluster_embs = embeddings_normalized[mask.to_numpy()]
+        centroid = centroids_normalized[cid]
+        sims = cosine_similarity(cluster_embs, centroid.reshape(1, -1)).flatten()
+        top = np.argsort(sims)[-N_EXEMPLARS:][::-1]
+        exemplars = []
+        for idx in top:
+            row = cluster_concerns.iloc[idx]
+            exemplars.append({
+                "concern": row["concern"],
+                "technology": row.get("technology", row.get("technology_meta", "")),
+                "year": int(row["year"]) if pd.notna(row.get("year")) else None,
+                "similarity": float(sims[idx]),
+            })
+        tech_dist = (
+            cluster_concerns.get("technology", cluster_concerns["technology_meta"])
+            .value_counts().head(3).to_dict()
+        )
+        max_ent_norm = float(np.log(concerns_df["technology_meta"].nunique()))
+        cluster_exemplars[cid] = {
+            "size": int(mask.sum()),
+            "entropy": cluster_entropy[cid] / max_ent_norm if max_ent_norm > 0 else 0.0,
+            "is_cross_cutting": (cluster_entropy[cid] / max_ent_norm) >= 0.5
+            if max_ent_norm > 0 else False,
+            "top_technologies": tech_dist,
+            "exemplars": exemplars,
+        }
+    with open(out_sub / "cluster_exemplars.json", "w") as f:
+        json.dump(cluster_exemplars, f, indent=2, default=str)
+
+    original_k = getattr(address_stage, "n_concern_clusters", None)
+    try:
+        address_stage.n_concern_clusters = k
+
+        print(f"[prompt={prompt}, k={k}] labelling clusters (LLM)...")
+        cluster_labels_dict = address_stage.label_clusters(
+            cluster_exemplars, kind="concern", output_folder=out_sub, client=client,
+        )
+        print(f"[prompt={prompt}, k={k}] generating {n_lens_runs} lens mappings (LLM)...")
+        address_stage.generate_lens_grouping_multi(
+            cluster_exemplars, cluster_labels_dict, k, "concern", client,
+            centroids_normalized=centroids_normalized,
+            n_runs=n_lens_runs, output_folder=out_sub,
+        )
+        print(f"[prompt={prompt}, k={k}] σ² sweep...")
+        run_files = sorted(
+            out_sub.glob("framing_lens_mappings_run_*.json"),
+            key=lambda p: int(p.stem.rsplit("_", 1)[-1]),
+        )
+        if not run_files:
+            raise RuntimeError(f"[prompt={prompt}, k={k}] no lens-grouping runs succeeded")
+        per_run_mappings = [json.loads(p.read_text()) for p in run_files]
+        address_stage.sigma2_sweep_select(
+            centroids=centroids_normalized,
+            mappings_list=per_run_mappings,
+            kind="concern",
+            output_folder=out_sub,
+        )
+    finally:
+        if original_k is not None:
+            address_stage.n_concern_clusters = original_k
+
+    print(f"[prompt={prompt}, k={k}] done. Artifacts at {out_sub}")
+    return out_sub
 
 # =============================================================================
 # Pipeline artifact loader (parameterised by k, prompt)
