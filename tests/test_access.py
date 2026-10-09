@@ -172,3 +172,139 @@ class TestLoadArtifactsSmoke:
     def test_load_artifacts_raises_on_missing_files(self, tmp_path):
         with pytest.raises((FileNotFoundError, Exception)):
             access.load_artifacts(tmp_path, tmp_path)
+
+
+# ===========================================================================
+# Coverage-based fallback and image-only detection
+# ===========================================================================
+ 
+import pytest as _pytest
+ 
+_PARA = ("Participants worried that decisions about their data would be made "
+         "without them, and asked who would be accountable when things went "
+         "wrong. They wanted clear explanations, independent oversight and a "
+         "meaningful way to say no. ")
+ 
+ 
+def _make_pdf(path, paragraphs, fragments=0, fragment_text=None):
+    """Build a real PDF: each paragraph in its own text box (one layout block),
+    followed by *fragments* short one-line boxes (e.g. bullets / table cells)."""
+    fitz = _pytest.importorskip("fitz")
+    doc = fitz.open()
+    page = doc.new_page()
+    y = 40
+    for p in paragraphs:
+        if y > 700:
+            page, y = doc.new_page(), 40
+        page.insert_textbox(fitz.Rect(40, y, 560, y + 150), p, fontsize=9)
+        y += 160
+    for i in range(fragments):
+        if y > 780:
+            page, y = doc.new_page(), 40
+        txt = fragment_text or f"Point {i}: people said they want fair rules and more control over data use here."
+        page.insert_textbox(fitz.Rect(40, y, 560, y + 14), txt, fontsize=8)
+        y += 22
+    doc.save(str(path))
+    doc.close()
+ 
+ 
+class TestCoverageFallback:
+    def _run(self, path, **kw):
+        access.reset_chunk_stats()
+        chunks = access.extract_chunks_from_pdf(path, {"technology": "AI", "year": 2024}, **kw)
+        return chunks, access.get_doc_diagnostics().iloc[0]
+ 
+    def test_well_formed_document_keeps_paragraph_mode(self, tmp_path):
+        pdf = tmp_path / "clean.pdf"
+        _make_pdf(pdf, [_PARA * 2] * 5)
+        chunks, d = self._run(pdf)
+        assert d["segmentation"] == "blocks"
+        assert not d["low_coverage_fallback"]
+        assert all(c["chunking_method"] == "paragraph" for c in chunks)
+        assert d["final_coverage"] > 0.9
+ 
+    def test_fragmented_document_triggers_sentence_fallback(self, tmp_path):
+        # 3 real paragraphs (passes the old paragraph-count test) plus 120
+        # short bullet lines that the 40-word floor would discard.
+        pdf = tmp_path / "fragmented.pdf"
+        _make_pdf(pdf, [_PARA * 2] * 3, fragments=120)
+        chunks, d = self._run(pdf)
+        assert d["blocks_coverage"] < 0.5
+        assert d["low_coverage_fallback"]
+        assert d["segmentation"] == "sentence"
+        assert all(c["chunking_method"] == "sentence_fallback" for c in chunks)
+        assert d["final_coverage"] > 0.9
+        assert access.get_chunk_stats()["documents_low_coverage_fallback"] == 1
+ 
+    def test_zero_threshold_reproduces_v19_behaviour(self, tmp_path):
+        pdf = tmp_path / "fragmented.pdf"
+        _make_pdf(pdf, [_PARA * 2] * 3, fragments=120)
+        chunks, d = self._run(pdf, min_text_coverage=0.0)
+        assert d["segmentation"] == "blocks"
+        assert len(chunks) == 3            # only the three real paragraphs survive
+        assert d["final_coverage"] < 0.5   # most text silently lost
+ 
+    def test_fallback_recovers_more_text_than_v19(self, tmp_path):
+        pdf = tmp_path / "fragmented.pdf"
+        _make_pdf(pdf, [_PARA * 2] * 3, fragments=120)
+        _, old = self._run(pdf, min_text_coverage=0.0)
+        _, new = self._run(pdf)
+        assert new["words_kept"] > 2 * old["words_kept"]
+ 
+    def test_diagnostics_columns(self, tmp_path):
+        pdf = tmp_path / "clean.pdf"
+        _make_pdf(pdf, [_PARA * 2] * 4)
+        _, d = self._run(pdf)
+        for col in ["pages", "total_words", "words_per_page", "likely_image_only",
+                    "ocr_applied", "blocks_coverage", "newline_coverage", "fallback_reason",
+                    "segmentation", "low_coverage_fallback", "chunks_kept",
+                    "words_kept", "final_coverage"]:
+            assert col in d.index
+ 
+    def test_reset_clears_diagnostics(self, tmp_path):
+        pdf = tmp_path / "clean.pdf"
+        _make_pdf(pdf, [_PARA * 2] * 4)
+        self._run(pdf)
+        access.reset_chunk_stats()
+        assert access.get_doc_diagnostics().empty
+ 
+ 
+class TestImageOnlyDetection:
+    def _image_only_pdf(self, path):
+        fitz = _pytest.importorskip("fitz")
+        src = fitz.open()
+        page = src.new_page()
+        page.insert_textbox(fitz.Rect(40, 40, 560, 800), _PARA * 6, fontsize=11)
+        pix = page.get_pixmap(dpi=200)
+        src.close()
+        doc = fitz.open()
+        out = doc.new_page()
+        out.insert_image(out.rect, pixmap=pix)
+        doc.save(str(path))
+        doc.close()
+ 
+    def test_image_only_pdf_is_flagged(self, tmp_path):
+        pdf = tmp_path / "scan.pdf"
+        self._image_only_pdf(pdf)
+        access.reset_chunk_stats()
+        chunks = access.extract_chunks_from_pdf(pdf, {})
+        d = access.get_doc_diagnostics().iloc[0]
+        assert bool(d["likely_image_only"])
+        assert not bool(d["ocr_applied"])
+        assert chunks == []
+        assert access.get_chunk_stats()["documents_likely_image_only"] == 1
+ 
+    def test_ocr_recovers_text_when_tesseract_available(self, tmp_path):
+        import shutil
+        if shutil.which("tesseract") is None:
+            _pytest.skip("Tesseract not installed")
+        pdf = tmp_path / "scan.pdf"
+        self._image_only_pdf(pdf)
+        access.reset_chunk_stats()
+        chunks = access.extract_chunks_from_pdf(pdf, {}, ocr_if_image_only=True)
+        d = access.get_doc_diagnostics().iloc[0]
+        if not bool(d["ocr_applied"]):
+            _pytest.skip("Tesseract present but tessdata not found by PyMuPDF")
+        assert len(chunks) >= 1
+        assert "accountable" in " ".join(c["text"] for c in chunks)
+ 
