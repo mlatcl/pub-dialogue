@@ -6,7 +6,9 @@ evaluates each configuration against the three headline findings
 
 Dimensions (cheap — no additional LLM calls, reuse existing artifacts):
   - lens_run_idx : 1..N (reuses ``outputs/framing_lens_mappings_run_*.json``)
-  - sigma2_rule  : alternative selection rules on the stability curve
+    - sigma2_rule  : softness band used to pick σ² on the stability curve
+                   (constrained = the canonical 01a rule; one grid step
+                   harder / softer; hard = no smoothing)
   - baseline     : tech-weighted vs doc-weighted non-AI baseline (R2 only)
   - threshold    : cross-cutting entropy threshold (R1 only)
 
@@ -54,7 +56,7 @@ class MultiverseConfig:
     k: int = 75
     prompt: str = "V0"
     lens_run_idx: int = 1
-    sigma2_rule: str = "min_emd"
+    sigma2_rule: str = "constrained"
     baseline: str = "tech_weighted"
     threshold: float = 0.5
 
@@ -83,35 +85,98 @@ def enumerate_configurations(dimensions: dict[str, list]) -> list[MultiverseConf
 # =============================================================================
 
 
-def select_sigma2_min_emd(stability_curve: pd.DataFrame) -> float:
-    """Pick σ² at the row with minimum mean EMD."""
+# The canonical rule (used for every headline result, via
+# ``AddressStage.sigma2_sweep_select`` in 01a) picks the σ² with the lowest
+# mean EMD between lens runs, among σ² values whose mean effective support
+# (the effective number of lenses each cluster spreads over) lies strictly
+# inside (0.2, 0.6) × the mean number of lenses.  Without that band the
+# minimum-EMD σ² is the degenerate near-uniform solution, where every cluster
+# belongs almost equally to every lens and AI-vs-non-AI differences vanish.
+CANONICAL_SUPPORT_BAND: tuple[float, float] = (0.2, 0.6)
+
+
+def select_sigma2_in_band(
+    stability_curve: pd.DataFrame,
+    n_lenses: float,
+    band: tuple[float, float] = CANONICAL_SUPPORT_BAND,
+) -> float:
+    """Min-EMD σ² among rows with ``band[0]·n < eff_support < band[1]·n``.
+
+    Falls back to the unconstrained minimum-EMD row if no σ² lies in the
+    band — exactly as ``AddressStage.sigma2_sweep_select`` does.
+    """
+    low, high = band[0] * n_lenses, band[1] * n_lenses
+    inside = stability_curve[
+        (stability_curve["mean_eff_support"] > low)
+        & (stability_curve["mean_eff_support"] < high)
+    ]
+    pool = inside if not inside.empty else stability_curve
+    return float(pool.loc[pool["mean_emd"].idxmin(), "sigma2"])
+
+
+def select_sigma2_constrained(stability_curve: pd.DataFrame, n_lenses: float) -> float:
+    """The canonical rule: band (0.2, 0.6) × n_lenses.  Reproduces 01a's σ²*."""
+    return select_sigma2_in_band(stability_curve, n_lenses, CANONICAL_SUPPORT_BAND)
+
+
+def _neighbour_on_grid(stability_curve: pd.DataFrame, n_lenses: float, step: int) -> float:
+    """σ² *step* grid points away from the canonical choice (clipped to the grid)."""
+    grid = np.sort(stability_curve["sigma2"].to_numpy(dtype=float))
+    canonical = select_sigma2_constrained(stability_curve, n_lenses)
+    i = int(np.argmin(np.abs(grid - canonical)))
+    return float(grid[min(max(i + step, 0), len(grid) - 1)])
+
+
+def select_sigma2_one_step_harder(stability_curve: pd.DataFrame, n_lenses: float) -> float:
+    """Grid point just below the canonical σ² — each cluster spreads over
+    fewer lenses (sharper memberships)."""
+    return _neighbour_on_grid(stability_curve, n_lenses, -1)
+
+
+def select_sigma2_one_step_softer(stability_curve: pd.DataFrame, n_lenses: float) -> float:
+    """Grid point just above the canonical σ² — each cluster spreads over
+    more lenses (softer memberships)."""
+    return _neighbour_on_grid(stability_curve, n_lenses, +1)
+
+
+def select_sigma2_hard(stability_curve: pd.DataFrame, n_lenses: float) -> float:
+    """Smallest σ² swept — effectively hard assignment of each cluster to
+    its best-fitting lens.  A no-smoothing reference point."""
+    return float(stability_curve["sigma2"].min())
+
+
+SIGMA2_RULES: dict[str, Callable[[pd.DataFrame, float], float]] = {
+    "constrained": select_sigma2_constrained,
+    "one_step_harder": select_sigma2_one_step_harder,
+    "one_step_softer": select_sigma2_one_step_softer,
+    "hard": select_sigma2_hard,
+}
+
+
+# --- Legacy rules (pre-October 2026). Kept so old results can be reproduced;
+# --- not used by default.  Both select σ² values unrelated to the headline:
+# --- "min_emd" lands on the degenerate near-uniform solution, and "median"
+# --- is the middle of the σ² grid regardless of the data.
+def select_sigma2_min_emd(stability_curve: pd.DataFrame, n_lenses: float = 0.0) -> float:
+    """LEGACY: unconstrained minimum-EMD row (degenerate near-uniform σ²)."""
     idx = stability_curve["mean_emd"].idxmin()
     return float(stability_curve.loc[idx, "sigma2"])
 
 
-def select_sigma2_min_emd_support_cap(
-    stability_curve: pd.DataFrame, support_cap: float = 2.0
-) -> float:
-    """Pick σ² at the min-EMD row subject to effective-support ≥ ``support_cap``."""
-    if "mean_eff_support" not in stability_curve.columns:
-        return select_sigma2_min_emd(stability_curve)
-    constrained = stability_curve[stability_curve["mean_eff_support"] >= support_cap]
-    if constrained.empty:
-        return select_sigma2_min_emd(stability_curve)
-    idx = constrained["mean_emd"].idxmin()
-    return float(constrained.loc[idx, "sigma2"])
-
-
-def select_sigma2_median(stability_curve: pd.DataFrame) -> float:
-    """Median σ² value in the stability curve — a weak alternative baseline."""
+def select_sigma2_median(stability_curve: pd.DataFrame, n_lenses: float = 0.0) -> float:
+    """LEGACY: median of the σ² grid (not data-driven)."""
     return float(stability_curve["sigma2"].median())
 
 
-SIGMA2_RULES: dict[str, Callable[[pd.DataFrame], float]] = {
+LEGACY_SIGMA2_RULES: dict[str, Callable[[pd.DataFrame, float], float]] = {
     "min_emd": select_sigma2_min_emd,
-    "min_emd_support_cap": select_sigma2_min_emd_support_cap,
     "median": select_sigma2_median,
 }
+
+
+def mean_n_lenses(per_run_mappings: list[dict]) -> float:
+    """Mean number of lenses across lens runs — the n in the support band."""
+    return float(np.mean([len(m) for m in per_run_mappings]))
 
 
 # =============================================================================
@@ -861,13 +926,17 @@ def run_configuration(
     """Evaluate one configuration against the three ℓ functions."""
     row: dict[str, Any] = config.as_dict()
 
-    sigma2_fn = SIGMA2_RULES[config.sigma2_rule]
-    sigma2 = sigma2_fn(bundle["stability_curve"])
-    row["sigma2"] = sigma2
-
     mappings = bundle["per_run_mappings"]
     if not mappings:
         raise RuntimeError("No per-run lens mappings in the artifact bundle.")
+
+    rules = {**SIGMA2_RULES, **LEGACY_SIGMA2_RULES}
+    if config.sigma2_rule not in rules:
+        raise ValueError(f"Unknown sigma2_rule {config.sigma2_rule!r}; "
+                         f"choose from {list(SIGMA2_RULES)}")
+    sigma2 = rules[config.sigma2_rule](bundle["stability_curve"],
+                                       mean_n_lenses(mappings))
+    row["sigma2"] = sigma2
     if not (1 <= config.lens_run_idx <= len(mappings)):
         raise ValueError(
             f"lens_run_idx {config.lens_run_idx} out of range 1..{len(mappings)}"
