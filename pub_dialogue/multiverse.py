@@ -10,7 +10,8 @@ Dimensions (cheap — no additional LLM calls, reuse existing artifacts):
                    (constrained = the canonical 01a rule; one grid step
                    harder / softer; hard = no smoothing)
   - baseline     : tech-weighted vs doc-weighted non-AI baseline (R2 only)
-  - threshold    : cross-cutting entropy threshold (R1 only)
+  - threshold    : share of technologies a cluster must reach to count as
+                   cross-cutting under the coverage measure (R1 only)
 
 Dimensions (modest extra cost — one-time setup via ``prepare_k_variant``):
   - k : 60, 75, 90 (reclusters existing embeddings at new k, regenerates
@@ -241,18 +242,22 @@ def compute_ai_vs_nonai_pp(
 
 
 def ell_R1_cross_cutting_share(
-    cluster_entropy: dict[int, float] | dict[str, float],
+    phrases_df: pd.DataFrame,
     threshold: float,
-    n_techs: int,
+    n_clusters: int,
+    tech_col: str = "technology_meta",
 ) -> float:
-    """Fraction of concern clusters that are cross-cutting at a given threshold."""
-    if not cluster_entropy:
+    """Fraction of concern clusters that are cross-cutting under the coverage
+    measure (see pub_dialogue.crosscut).  ``threshold`` is the share of
+    technologies a cluster must reach (min_fraction), e.g. 0.5 = 6 of 12."""
+    from pub_dialogue.crosscut import classify_crosscutting
+
+    if phrases_df is None or phrases_df.empty:
         return float("nan")
-    max_ent = float(np.log(n_techs)) if n_techs > 1 else 1.0
-    cross_cutting = sum(
-        1 for _, ent in cluster_entropy.items() if (ent / max_ent) >= threshold
+    clusters, _ = classify_crosscutting(
+        phrases_df, n_clusters, tech_col=tech_col, min_fraction=threshold, n_perm=0
     )
-    return cross_cutting / len(cluster_entropy)
+    return float(clusters["cross_cutting"].mean())
 
 
 def ell_R2_max_pp_gap(
@@ -429,12 +434,17 @@ def prepare_k_variant(
         probs = concerns_df.loc[mask, "technology_meta"].value_counts(normalize=True)
         cluster_entropy[cid] = float(_entropy(probs.values))
 
-    with open(out_sub / "cluster_entropy.json", "w") as f:
+   with open(out_sub / "cluster_entropy.json", "w") as f:
         json.dump(
             {"raw": {str(k_): v for k_, v in cluster_entropy.items()}},
             f,
             indent=2,
         )
+
+    # Cross-cutting flags for cluster labelling: coverage measure (crosscut.py)
+    from pub_dialogue.crosscut import classify_crosscutting
+    _xc, _ = classify_crosscutting(concerns_df, k, n_perm=0)
+    _xc_flags = dict(zip(_xc["cluster_id"].astype(int), _xc["cross_cutting"].astype(bool)))
 
     # --- 4. Extract per-cluster exemplars (for cluster labelling) ---
     print(f"[k={k}] extracting exemplars...")
@@ -470,9 +480,7 @@ def prepare_k_variant(
         cluster_exemplars[cid] = {
             "size": int(mask.sum()),
             "entropy": cluster_entropy[cid] / max_ent_norm if max_ent_norm > 0 else 0.0,
-            "is_cross_cutting": (cluster_entropy[cid] / max_ent_norm) >= 0.5
-            if max_ent_norm > 0
-            else False,
+            "is_cross_cutting": bool(_xc_flags.get(cid, False)),
             "top_technologies": tech_dist,
             "exemplars": exemplars,
         }
@@ -710,6 +718,11 @@ def prepare_prompt_variant(
     with open(out_sub / "cluster_entropy.json", "w") as f:
         json.dump({"raw": {str(cid): v for cid, v in cluster_entropy.items()}}, f, indent=2)
 
+    # Cross-cutting flags for cluster labelling: coverage measure (crosscut.py)
+    from pub_dialogue.crosscut import classify_crosscutting
+    _xc, _ = classify_crosscutting(concerns_df, k, n_perm=0)
+    _xc_flags = dict(zip(_xc["cluster_id"].astype(int), _xc["cross_cutting"].astype(bool)))
+
     print(f"[prompt={prompt}, k={k}] extracting exemplars...")
     N_EXEMPLARS = 8
     cluster_exemplars = {}
@@ -739,8 +752,7 @@ def prepare_prompt_variant(
         cluster_exemplars[cid] = {
             "size": int(mask.sum()),
             "entropy": cluster_entropy[cid] / max_ent_norm if max_ent_norm > 0 else 0.0,
-            "is_cross_cutting": (cluster_entropy[cid] / max_ent_norm) >= 0.5
-            if max_ent_norm > 0 else False,
+            "is_cross_cutting": bool(_xc_flags.get(cid, False)),
             "top_technologies": tech_dist,
             "exemplars": exemplars,
         }
@@ -954,7 +966,7 @@ def run_configuration(
     row["n_lenses"] = len(lens_names)
 
     row["ell_R1"] = ell_R1_cross_cutting_share(
-        bundle["cluster_entropy"], config.threshold, bundle["n_techs"]
+        bundle["concerns_df"], config.threshold, bundle["centroids"].shape[0]
     )
     row["ell_R2"] = ell_R2_max_pp_gap(
         bundle["concerns_df"], mixture_weights, baseline=config.baseline
