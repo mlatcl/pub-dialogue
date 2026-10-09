@@ -49,6 +49,7 @@ from pub_dialogue.utils import (  # noqa: F401
     extract_chunks_from_pdf,
     reset_chunk_stats,
     get_chunk_stats,
+    get_doc_diagnostics,
     # Address-stage extraction
     ExtractionResult,
     extract_phrases,
@@ -83,6 +84,8 @@ from pub_dialogue.utils import (  # noqa: F401
     MIN_CHUNK_CHARS,
     SENTENCE_FALLBACK_TARGET_WORDS,
     SENTENCE_FALLBACK_MIN_PARAGRAPHS,
+    MIN_TEXT_COVERAGE,
+    MIN_WORDS_PER_PAGE,
     EXTRACTION_PROMPT,
     BENEFIT_EXTRACTION_PROMPT,
 )
