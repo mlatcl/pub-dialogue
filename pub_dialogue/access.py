@@ -21,6 +21,17 @@ Public API:
 Constants:
   MIN_CHUNK_WORDS, MIN_CHUNK_CHARS, MAX_CHUNK_WORDS
   SENTENCE_FALLBACK_TARGET_WORDS, SENTENCE_FALLBACK_MIN_PARAGRAPHS
+# Paragraph segmentation is only accepted if the substantive paragraphs it
+# keeps (those passing the word/char floors) contain at least this fraction
+# of the document's words.  Below it, the PDF is fragmenting into short
+# pieces (one per line/bullet/table cell) that the floor would discard, so the
+# whole document is sentence-split and repacked instead.  Calibrate with
+# scripts/chunking_report.py before changing.
+MIN_TEXT_COVERAGE: float = 0.5
+# Documents with fewer extractable words per page than this are flagged as
+# likely image-only (scanned) PDFs that need OCR.
+MIN_WORDS_PER_PAGE: int = 30
+
 """
 
 from __future__ import annotations
@@ -69,6 +80,9 @@ class AccessStage:
     min_chunk_words: int = MIN_CHUNK_WORDS
     max_chunk_words: int = MAX_CHUNK_WORDS
     min_chunk_chars: int = MIN_CHUNK_CHARS
+    min_text_coverage: float = MIN_TEXT_COVERAGE
+    min_words_per_page: int = MIN_WORDS_PER_PAGE
+    ocr_if_image_only: bool = False
 
     def load_artifacts(self) -> dict:
         """Load pre-computed artefacts from output_folder and checkpoint_folder."""
@@ -95,18 +109,64 @@ _chunk_stats: Dict[str, int] = {
     "chunks_from_sentence_fallback": 0,
     "documents_blocks_primary": 0,
     "documents_text_newline_primary": 0,
+    "documents_low_coverage_fallback": 0,
+    "documents_likely_image_only": 0,
+    "documents_ocr_applied": 0,
 }
+
+# Per-document diagnostics from the most recent run (reset with the stats).
+_doc_diagnostics: List[Dict[str, Any]] = []
 
 
 def reset_chunk_stats() -> None:
     """Reset the module-level chunk statistics accumulator to zero."""
     for key in _chunk_stats:
         _chunk_stats[key] = 0
+    _doc_diagnostics.clear()
 
 
 def get_chunk_stats() -> Dict[str, int]:
     """Return a copy of the current chunk statistics accumulator."""
     return dict(_chunk_stats)
+
+
+def get_doc_diagnostics() -> pd.DataFrame:
+    """Per-document chunking diagnostics accumulated since the last reset.
+
+    One row per PDF: pages, total words, words per page, which segmentation
+    was used, the text coverage of each candidate segmentation, chunks kept,
+    words kept, final coverage, and whether the PDF looks image-only.
+    """
+    return pd.DataFrame(_doc_diagnostics)
+
+
+def _word_count(text: str) -> int:
+    return len(text.split())
+
+
+def _coverage(paragraphs: List[str], total_words: int,
+              min_chunk_words: int, min_chunk_chars: int) -> float:
+    """Fraction of the document's words that sit in substantive paragraphs."""
+    if total_words == 0:
+        return 0.0
+    kept = sum(
+        _word_count(p) for p in paragraphs
+        if _word_count(p) >= min_chunk_words and len(p) >= min_chunk_chars
+    )
+    return kept / total_words
+
+
+def _ocr_text(doc, language: str = "eng", dpi: int = 300) -> str:
+    """OCR every page with PyMuPDF's Tesseract bridge; returns '' on failure."""
+    parts = []
+    for page in doc:
+        try:
+            tp = page.get_textpage_ocr(language=language, dpi=dpi, full=True)
+            parts.append(page.get_text(textpage=tp))
+        except Exception as exc:  # Tesseract missing / tessdata not found
+            print(f"  OCR unavailable ({exc}); skipping OCR.")
+            return ""
+    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +254,10 @@ def extract_chunks_from_pdf(
     max_chunk_words: int = MAX_CHUNK_WORDS,
     sentence_fallback_target_words: int = SENTENCE_FALLBACK_TARGET_WORDS,
     sentence_fallback_min_paragraphs: int = SENTENCE_FALLBACK_MIN_PARAGRAPHS,
+    min_text_coverage: float = MIN_TEXT_COVERAGE,
+    min_words_per_page: int = MIN_WORDS_PER_PAGE,
+    ocr_if_image_only: bool = False,
+    ocr_language: str = "eng",
 ) -> List[Dict[str, Any]]:
     """Extract text chunks from a single PDF using the v19 three-case hybrid strategy.
 
@@ -209,9 +273,16 @@ def extract_chunks_from_pdf(
         of ≈ *sentence_fallback_target_words* words.
 
     Case 3 — Full sentence-level fallback:
-        Neither block extraction nor double-newline splitting produces
-        *sentence_fallback_min_paragraphs* substantive paragraphs.  The
-        entire document is sentence-split and repacked.
+        Neither block extraction nor double-newline splitting yields an
+        acceptable segmentation, i.e. one with at least
+        *sentence_fallback_min_paragraphs* substantive paragraphs that
+        together contain at least *min_text_coverage* of the document's
+        words.  The entire document is sentence-split and repacked.
+
+        The coverage condition catches PDFs that split into many short
+        fragments (one per line, bullet or table cell): they pass the
+        paragraph-count test, but the word floor would then discard most of
+        the text.
 
     Paragraph detection uses a two-tier approach:
 
@@ -219,8 +290,14 @@ def extract_chunks_from_pdf(
        layout geometry to identify paragraph boundaries, working even when
        the PDF text stream lacks ``\\n\\n`` encoding.  This is tried first.
     2. **Text-newline fallback** (``_paragraph_split``): splits the full
-       plain-text string on double-newlines.  Used only when blocks produce
-       fewer than *sentence_fallback_min_paragraphs* substantive segments.
+       plain-text string on double-newlines.  Used only when the blocks
+       segmentation is not acceptable.
+
+    Image-only PDFs (fewer than *min_words_per_page* extractable words per
+    page) are flagged.  With ``ocr_if_image_only=True`` they are OCR'd via
+    Tesseract (must be installed) and the OCR text is chunked as above;
+    otherwise they are chunked as-is and the flag is recorded in
+    :func:`get_doc_diagnostics`.
 
     Each returned chunk dict includes a ``chunking_method`` key:
     ``"paragraph"``, ``"sentence_split"``, or ``"sentence_fallback"``.
@@ -242,6 +319,17 @@ def extract_chunks_from_pdf(
     sentence_fallback_min_paragraphs:
         Minimum substantive paragraphs required for paragraph-mode; fewer
         triggers case-3 sentence fallback.
+    min_text_coverage:
+        Minimum fraction of the document's words that the substantive
+        paragraphs must contain for paragraph-mode to be accepted.
+        Set to 0 to recover the pre-coverage (v19) behaviour.
+    min_words_per_page:
+        Below this many extractable words per page the PDF is flagged as
+        likely image-only.
+    ocr_if_image_only:
+        OCR flagged image-only PDFs with Tesseract before chunking.
+    ocr_language:
+        Tesseract language code used for OCR.
 
     Returns
     -------
@@ -253,32 +341,93 @@ def extract_chunks_from_pdf(
         raise ImportError("PyMuPDF (fitz) is required for PDF extraction.") from exc
 
     chunks: List[Dict[str, Any]] = []
+    diag: Dict[str, Any] = {"source_file": Path(pdf_path).name}
+
+    def _n_substantive(paras: List[str]) -> int:
+        return sum(
+            1 for p in paras
+            if _word_count(p) >= min_chunk_words and len(p) >= min_chunk_chars
+        )
+
+    def _acceptable(paras: List[str], coverage: float) -> bool:
+        return (_n_substantive(paras) >= sentence_fallback_min_paragraphs
+                and coverage >= min_text_coverage)
 
     try:
         doc = fitz.open(pdf_path)
+        try:
+            n_pages = len(doc)
+        except TypeError:  # mocked documents in tests
+            n_pages = 1
 
         block_paragraphs = _extract_paragraphs_from_blocks(doc)
         full_text = "".join(page.get_text() for page in doc)
+        total_words = _word_count(full_text)
+        words_per_page = total_words / max(1, n_pages)
+        likely_image_only = words_per_page < min_words_per_page
+        ocr_applied = False
+
+        if likely_image_only:
+            _chunk_stats["documents_likely_image_only"] += 1
+            print(f"Warning: {Path(pdf_path).name} has {words_per_page:.0f} "
+                  f"extractable words/page — likely image-only (needs OCR).")
+            if ocr_if_image_only:
+                ocr_text = _ocr_text(doc, language=ocr_language)
+                if _word_count(ocr_text) > total_words:
+                    full_text = ocr_text
+                    total_words = _word_count(full_text)
+                    block_paragraphs = []  # OCR text has no layout blocks
+                    ocr_applied = True
+                    _chunk_stats["documents_ocr_applied"] += 1
         doc.close()
 
-        block_substantive = [
-            p for p in block_paragraphs
-            if len(p.split()) >= min_chunk_words and len(p) >= min_chunk_chars
-        ]
-        if len(block_substantive) >= sentence_fallback_min_paragraphs:
-            paragraphs = block_paragraphs
-            _chunk_stats["documents_blocks_primary"] += 1
+        block_cov = _coverage(block_paragraphs, total_words,
+                              min_chunk_words, min_chunk_chars)
+        newline_paragraphs = _paragraph_split(full_text)
+        newline_cov = _coverage(newline_paragraphs, total_words,
+                                min_chunk_words, min_chunk_chars)
+
+        # Choose a segmentation.  A candidate is acceptable if it has enough
+        # substantive paragraphs AND they hold enough of the document's text.
+        # A candidate that has enough paragraphs but too little coverage is
+        # "rejected for coverage" — the case v19 silently let through.
+        def _enough(paras: List[str]) -> bool:
+            return _n_substantive(paras) >= sentence_fallback_min_paragraphs
+
+        candidates = [("blocks", block_paragraphs, block_cov),
+                      ("newline", newline_paragraphs, newline_cov)]
+        chosen = next(((n, p, c) for n, p, c in candidates if _acceptable(p, c)), None)
+        rejected_for_coverage = any(
+            _enough(p) and c < min_text_coverage for _, p, c in candidates
+        )
+
+        if chosen is not None:
+            segmentation, paragraphs, _ = chosen
+            fallback_reason = None
+            key = ("documents_blocks_primary" if segmentation == "blocks"
+                   else "documents_text_newline_primary")
+            _chunk_stats[key] += 1
         else:
-            paragraphs = _paragraph_split(full_text)
-            _chunk_stats["documents_text_newline_primary"] += 1
+            segmentation, paragraphs = "sentence", []
+            fallback_reason = ("low_coverage" if rejected_for_coverage
+                               else "too_few_paragraphs")
+            if rejected_for_coverage:
+                _chunk_stats["documents_low_coverage_fallback"] += 1
 
-        substantive = [
-            p for p in paragraphs
-            if len(p.split()) >= min_chunk_words and len(p) >= min_chunk_chars
-        ]
-        too_few_paragraphs = len(substantive) < sentence_fallback_min_paragraphs
+        low_coverage = fallback_reason == "low_coverage"
 
-        if too_few_paragraphs:
+        diag.update({
+            "pages": n_pages,
+            "total_words": total_words,
+            "words_per_page": round(words_per_page, 1),
+            "likely_image_only": likely_image_only,
+            "ocr_applied": ocr_applied,
+            "blocks_coverage": round(block_cov, 3),
+            "newline_coverage": round(newline_cov, 3),
+            "fallback_reason": fallback_reason,
+        })
+
+        if segmentation == "sentence":
             # Case 3: full sentence-level fallback
             _chunk_stats["documents_sentence_fallback"] += 1
             sentences = _split_into_sentences(full_text)
@@ -345,9 +494,20 @@ def extract_chunks_from_pdf(
             })
             _chunk_stats["paragraphs_kept"] += 1
 
+        words_kept = sum(c["word_count"] for c in chunks)
+        diag.update({
+            "segmentation": segmentation,
+            "low_coverage_fallback": low_coverage,
+            "chunks_kept": len(chunks),
+            "words_kept": words_kept,
+            "final_coverage": round(words_kept / total_words, 3) if total_words else 0.0,
+        })
+
     except Exception as e:
         print(f"Error processing {Path(pdf_path).name}: {e}")
+        diag["error"] = str(e)
 
+    _doc_diagnostics.append(diag)
     return chunks
 
 
