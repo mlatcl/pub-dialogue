@@ -434,7 +434,7 @@ def prepare_k_variant(
         probs = concerns_df.loc[mask, "technology_meta"].value_counts(normalize=True)
         cluster_entropy[cid] = float(_entropy(probs.values))
 
-   with open(out_sub / "cluster_entropy.json", "w") as f:
+    with open(out_sub / "cluster_entropy.json", "w") as f:
         json.dump(
             {"raw": {str(k_): v for k_, v in cluster_entropy.items()}},
             f,
