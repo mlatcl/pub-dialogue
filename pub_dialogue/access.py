@@ -54,7 +54,16 @@ MIN_CHUNK_CHARS: int = 80
 MAX_CHUNK_WORDS: int = 500
 SENTENCE_FALLBACK_TARGET_WORDS: int = 300
 SENTENCE_FALLBACK_MIN_PARAGRAPHS: int = 3
-
+# Paragraph segmentation is only accepted if the substantive paragraphs it
+# keeps (those passing the word/char floors) contain at least this fraction
+# of the document's words.  Below it, the PDF is fragmenting into short
+# pieces (one per line/bullet/table cell) that the floor would discard, so the
+# whole document is sentence-split and repacked instead.  Calibrate with
+# scripts/chunking_report.py before changing.
+MIN_TEXT_COVERAGE: float = 0.5
+# Documents with fewer extractable words per page than this are flagged as
+# likely image-only (scanned) PDFs that need OCR.
+MIN_WORDS_PER_PAGE: int = 30
 # ---------------------------------------------------------------------------
 # AccessStage — typed config dataclass (CIP-0010 Phase 1)
 # ---------------------------------------------------------------------------
@@ -254,86 +263,6 @@ def extract_chunks_from_pdf(
     max_chunk_words: int = MAX_CHUNK_WORDS,
     sentence_fallback_target_words: int = SENTENCE_FALLBACK_TARGET_WORDS,
     sentence_fallback_min_paragraphs: int = SENTENCE_FALLBACK_MIN_PARAGRAPHS,
-    min_text_coverage: float = MIN_TEXT_COVERAGE,
-    min_words_per_page: int = MIN_WORDS_PER_PAGE,
-    ocr_if_image_only: bool = False,
-    ocr_language: str = "eng",
-) -> List[Dict[str, Any]]:
-    """Extract text chunks from a single PDF using the v19 three-case hybrid strategy.
-
-    Case 1 — Paragraph-only segmentation:
-        Double-newline splitting produces ≥ *sentence_fallback_min_paragraphs*
-        substantive paragraphs and no paragraph exceeds *max_chunk_words*.
-        All chunks are the author's paragraphs, unchanged.
-
-    Case 2 — Paragraph segmentation with internal sentence-splitting:
-        Double-newline splitting produces enough substantive paragraphs but at
-        least one paragraph exceeds *max_chunk_words*.  Well-sized paragraphs
-        are kept as-is; only the oversized ones are sentence-split into windows
-        of ≈ *sentence_fallback_target_words* words.
-
-    Case 3 — Full sentence-level fallback:
-        Neither block extraction nor double-newline splitting yields an
-        acceptable segmentation, i.e. one with at least
-        *sentence_fallback_min_paragraphs* substantive paragraphs that
-        together contain at least *min_text_coverage* of the document's
-        words.  The entire document is sentence-split and repacked.
-
-        The coverage condition catches PDFs that split into many short
-        fragments (one per line, bullet or table cell): they pass the
-        paragraph-count test, but the word floor would then discard most of
-        the text.
-
-    Paragraph detection uses a two-tier approach:
-
-    1. **Blocks-primary** (``page.get_text("blocks")``): uses PyMuPDF's
-       layout geometry to identify paragraph boundaries, working even when
-       the PDF text stream lacks ``\\n\\n`` encoding.  This is tried first.
-    2. **Text-newline fallback** (``_paragraph_split``): splits the full
-       plain-text string on double-newlines.  Used only when the blocks
-       segmentation is not acceptable.
-
-    Image-only PDFs (fewer than *min_words_per_page* extractable words per
-    page) are flagged.  With ``ocr_if_image_only=True`` they are OCR'd via
-    Tesseract (must be installed) and the OCR text is chunked as above;
-    otherwise they are chunked as-is and the flag is recorded in
-    :func:`get_doc_diagnostics`.
-
-    Each returned chunk dict includes a ``chunking_method`` key:
-    ``"paragraph"``, ``"sentence_split"``, or ``"sentence_fallback"``.
-
-    Accumulates statistics into the module-level ``_chunk_stats`` dict.
-    Call :func:`reset_chunk_stats` before each pipeline run and
-    :func:`get_chunk_stats` to retrieve the totals.
-
-    Parameters
-    ----------
-    pdf_path:
-        Path to the PDF file.
-    metadata:
-        Dict with at least ``'technology'`` and ``'year'`` keys.
-    min_chunk_words, min_chunk_chars, max_chunk_words:
-        Length filters applied after chunking.
-    sentence_fallback_target_words:
-        Target window size (words) when sentence-repacking.
-    sentence_fallback_min_paragraphs:
-        Minimum substantive paragraphs required for paragraph-mode; fewer
-        triggers case-3 sentence fallback.
-    min_text_coverage:
-        Minimum fraction of the document's words that the substantive
-        paragraphs must contain for paragraph-mode to be accepted.
-        Set to 0 to recover the pre-coverage (v19) behaviour.
-    min_words_per_page:
-        Below this many extractable words per page the PDF is flagged as
-        likely image-only.
-    ocr_if_image_only:
-        OCR flagged image-only PDFs with Tesseract before chunking.
-    ocr_language:
-        Tesseract language code used for OCR.
-
-    Returns
-    -------
-    list of dicts, one per accepted chunk.
     """
     try:
         import fitz  # type: ignore  # PyMuPDF
