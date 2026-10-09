@@ -21,16 +21,6 @@ Public API:
 Constants:
   MIN_CHUNK_WORDS, MIN_CHUNK_CHARS, MAX_CHUNK_WORDS
   SENTENCE_FALLBACK_TARGET_WORDS, SENTENCE_FALLBACK_MIN_PARAGRAPHS
-# Paragraph segmentation is only accepted if the substantive paragraphs it
-# keeps (those passing the word/char floors) contain at least this fraction
-# of the document's words.  Below it, the PDF is fragmenting into short
-# pieces (one per line/bullet/table cell) that the floor would discard, so the
-# whole document is sentence-split and repacked instead.  Calibrate with
-# scripts/chunking_report.py before changing.
-MIN_TEXT_COVERAGE: float = 0.5
-# Documents with fewer extractable words per page than this are flagged as
-# likely image-only (scanned) PDFs that need OCR.
-MIN_WORDS_PER_PAGE: int = 30
 
 """
 
@@ -263,6 +253,17 @@ def extract_chunks_from_pdf(
     max_chunk_words: int = MAX_CHUNK_WORDS,
     sentence_fallback_target_words: int = SENTENCE_FALLBACK_TARGET_WORDS,
     sentence_fallback_min_paragraphs: int = SENTENCE_FALLBACK_MIN_PARAGRAPHS,
+    min_text_coverage: float = MIN_TEXT_COVERAGE,
+    min_words_per_page: int = MIN_WORDS_PER_PAGE,
+    ocr_if_image_only: bool = False,
+    ocr_language: str = "eng",
+) -> List[Dict[str, Any]]:
+    """Extract text chunks from one PDF (see module docs for the three cases).
+
+    Paragraph mode is used only if the substantive paragraphs hold at least
+    *min_text_coverage* of the document's words; otherwise the whole text is
+    sentence-split and repacked.  PDFs with fewer than *min_words_per_page*
+    words per page are flagged as image-only (OCR'd if *ocr_if_image_only*).
     """
     try:
         import fitz  # type: ignore  # PyMuPDF
