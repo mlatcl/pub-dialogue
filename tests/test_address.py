@@ -593,26 +593,38 @@ class TestExtractPhrasesRetry:
 # ===========================================================================
 
 class TestAssignWindow:
-    def test_early_year_first_window(self):
-        assert address.assign_window(2010) == "2004-2017"
-
-    def test_boundary_2017(self):
-        assert address.assign_window(2017) == "2004-2017"
-
-    def test_second_window(self):
-        assert address.assign_window(2019) == "2018-2020"
+    def test_first_window(self):
+        assert address.assign_window(2017) == "2017-2020"
 
     def test_boundary_2020(self):
-        assert address.assign_window(2020) == "2018-2020"
+        assert address.assign_window(2020) == "2017-2020"
 
-    def test_third_window(self):
-        assert address.assign_window(2022) == "2021-2023"
+    def test_second_window(self):
+        assert address.assign_window(2021) == "2021-2023"
 
     def test_boundary_2023(self):
         assert address.assign_window(2023) == "2021-2023"
 
     def test_latest_window(self):
-        assert address.assign_window(2024) == "2024-2025"
+        assert address.assign_window(2024) == "2024-2026"
+        assert address.assign_window(2026) == "2024-2026"
+
+    def test_outside_windows_returns_none(self):
+        assert address.assign_window(2010) is None
+        assert address.assign_window(2030) is None
+
+    def test_window_order_matches_windows(self):
+        assert address.WINDOW_ORDER == ["2017-2020", "2021-2023", "2024-2026"]
+
+    def test_genai_split(self):
+        w = address.GENAI_WINDOWS
+        assert address.assign_window(2022, w) == "Before ChatGPT (2017-2022)"
+        assert address.assign_window(2023, w) == "After ChatGPT (2023-2026)"
+
+    def test_windows_do_not_overlap(self):
+        for windows in (address.TIME_WINDOWS, address.GENAI_WINDOWS):
+            years = [y for _, a, b in windows for y in range(a, b + 1)]
+            assert len(years) == len(set(years))
 
     def test_nan_returns_none(self):
         import math
