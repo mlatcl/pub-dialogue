@@ -2026,11 +2026,33 @@ def run_sensitivity(
 # Temporal analysis helpers
 # ---------------------------------------------------------------------------
 
-def assign_window(year) -> Optional[str]:
-    """Map a year value to a broad time window string.
+# ---------------------------------------------------------------------------
+# Time windows for the AI temporal analysis (R3)
+# ---------------------------------------------------------------------------
+# Set from the corpus: 31 AI dialogues, 2017-2026, with at least 7 documents
+# per window.  TIME_WINDOWS is used for the descriptive analysis (Figure 4,
+# window summary table, multiverse R3); GENAI_WINDOWS splits at the public
+# release of ChatGPT (Nov 2022) for the formal before/after test.  Windows are
+# (label, first_year, last_year), inclusive; years outside every window map
+# to None (AI dialogues in this corpus all fall inside).
+TIME_WINDOWS: List[Tuple[str, int, int]] = [
+    ("2017-2020", 2017, 2020),
+    ("2021-2023", 2021, 2023),
+    ("2024-2026", 2024, 2026),
+]
+GENAI_WINDOWS: List[Tuple[str, int, int]] = [
+    ("Before ChatGPT (2017-2022)", 2017, 2022),
+    ("After ChatGPT (2023-2026)", 2023, 2026),
+]
+WINDOW_ORDER: List[str] = [w[0] for w in TIME_WINDOWS]
 
-    Returns one of ``"2004-2017"``, ``"2018-2020"``, ``"2021-2023"``,
-    ``"2024-2025"``, or ``None`` if *year* is NaN/missing.
+
+def assign_window(year, windows: Optional[List[Tuple[str, int, int]]] = None) -> Optional[str]:
+    """Map a year to its time-window label.
+
+    Uses :data:`TIME_WINDOWS` unless *windows* is given (e.g.
+    :data:`GENAI_WINDOWS`).  Returns ``None`` if *year* is missing or falls
+    outside every window.
     """
     if year is None:
         return None
@@ -2041,13 +2063,10 @@ def assign_window(year) -> Optional[str]:
     except Exception:
         pass
     y = int(year)
-    if y <= 2017:
-        return "2004-2017"
-    if y <= 2020:
-        return "2018-2020"
-    if y <= 2023:
-        return "2021-2023"
-    return "2024-2025"
+    for label, first, last in (windows or TIME_WINDOWS):
+        if first <= y <= last:
+            return label
+    return None"
 
 
 def _parse_listcol(s) -> list:
