@@ -2066,7 +2066,7 @@ def assign_window(year, windows: Optional[List[Tuple[str, int, int]]] = None) ->
     for label, first, last in (windows or TIME_WINDOWS):
         if first <= y <= last:
             return label
-    return None"
+    return None
 
 
 def _parse_listcol(s) -> list:
