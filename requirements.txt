@@ -12,6 +12,7 @@ PyMuPDF>=1.23
 matplotlib>=3.8
 seaborn>=0.13
 plotly>=5.18
+kaleido>=1.0
 
 # LLM / embeddings
 openai>=1.10
