@@ -557,7 +557,10 @@ class AddressStage:
                     elif part.strip().startswith("{"):
                         raw = part.strip()
                         break
-            return json.loads(raw)
+                        data = json.loads(raw)
+            for lens in data.get("framing_lenses", []):
+                lens["suggested_clusters"] = [int(c) for c in lens.get("suggested_clusters", [])]
+            return data
 
         content = client.complete(
             messages=[
@@ -566,6 +569,7 @@ class AddressStage:
                 {"role": "user", "content": lens_prompt},
             ],
             max_completion_tokens=8000,
+            response_format={"type": "json_object"},
         )
         suggested_lenses = _parse_lenses(content)
 
@@ -597,6 +601,7 @@ class AddressStage:
                     {"role": "user", "content": retry_prompt},
                 ],
                 max_completion_tokens=4000,
+                response_format={"type": "json_object"},
             )
             retry_lenses = _parse_lenses(retry_raw)
             by_name = {l["name"]: l for l in suggested_lenses["framing_lenses"]}
@@ -702,8 +707,12 @@ class AddressStage:
         from sklearn.metrics import adjusted_rand_score
 
         all_runs = []
-        for i in range(n_runs):
-            logger.info("Lens grouping run %d of %d for kind=%r", i + 1, n_runs, kind)
+        max_attempts = 2 * n_runs
+        attempt = 0
+        while len(all_runs) < n_runs and attempt < max_attempts:
+            attempt += 1
+            logger.info("Lens grouping attempt %d (%d of %d done) for kind=%r",
+                        attempt, len(all_runs), n_runs, kind)
             try:
                 result = self.generate_lens_grouping(
                     cluster_exemplars, cluster_labels_dict, n_clusters, kind, client,
@@ -711,7 +720,10 @@ class AddressStage:
                 )
                 all_runs.append(result)
             except Exception as exc:
-                logger.warning("Lens grouping run %d failed: %s", i + 1, exc)
+                logger.warning("Lens grouping attempt %d failed: %r", attempt, exc)
+        if len(all_runs) < n_runs:
+            logger.warning("Only %d of %d lens-grouping runs succeeded for kind=%r",
+                           len(all_runs), n_runs, kind)
 
         if not all_runs:
             raise RuntimeError(f"All {n_runs} lens-grouping runs failed for kind={kind!r}")
@@ -1432,6 +1444,14 @@ Paragraph:
 
 _SENTINELS = {"NO_CONCERN", "NO_BENEFIT"}
 
+# Leading list markers the LLM sometimes adds: "- ", "• ", "* ", "1. ", "2) "
+_LIST_MARKER = re.compile(r"^\s*(?:[-–—•*·]+\s*|\d{1,2}[.)]\s+)")
+
+
+def clean_phrase(phrase: str) -> str:
+    """Strip a leading list marker (dash, bullet, "1.") and surrounding spaces."""
+    return _LIST_MARKER.sub("", str(phrase)).strip()
+
 # Illegal XML/XLSX character pattern (PDF extraction artefacts: control chars)
 _ILLEGAL_XLSX_CHARS = re.compile(r"[\x00-\x08\x0B-\x0C\x0E-\x1F]")
 
@@ -1591,11 +1611,8 @@ def extract_phrases(
         if content in _SENTINELS or not content:
             return ExtractionResult(chunk_id=chunk_id, sentinel_returned=True)
 
-        raw_phrases = [
-            line.strip()
-            for line in content.split("\n")
-            if line.strip() and line.strip() not in _SENTINELS
-        ]
+        _lines = (clean_phrase(line) for line in content.split("\n"))
+        raw_phrases = [p for p in _lines if p and p not in _SENTINELS]
 
         retained: List[str] = []
         dropped: List[tuple] = []
