@@ -24,6 +24,9 @@ Dimensions (expensive — require full re-extraction, stubbed):
 Evaluation functions (ℓ):
   - ell_R1 : fraction of concern clusters that are cross-cutting
   - ell_R2 : AI-vs-non-AI pp difference on the top-AI-salient lens
+  - ell_R2_under : AI-vs-non-AI pp difference on the most AI-under-indexed
+             lens (most negative); the lens names for both are recorded in
+             R2_over_lens / R2_under_lens
   - ell_R3 : standard deviation of normalised AI concern entropy across
              four time windows (smaller = more "stable spread")
 
@@ -259,7 +262,6 @@ def ell_R1_cross_cutting_share(
     )
     return float(clusters["cross_cutting"].mean())
 
-
 def ell_R2_max_pp_gap(
     phrases_df: pd.DataFrame,
     mixture_weights: np.ndarray,
@@ -285,6 +287,28 @@ def ell_R2_max_pp_gap(
     return float(pp_diffs.max())
 
 
+def ell_R2_min_pp_gap(
+    phrases_df: pd.DataFrame,
+    mixture_weights: np.ndarray,
+    tech_col: str = "technology_meta",
+    baseline: str = "tech_weighted",
+) -> float:
+    """Most negative AI-vs-nonAI pp difference across any lens.
+
+    Negative values → AI is under-indexed on some lens by this many
+    percentage points, vs the chosen non-AI baseline. Mirror of
+    :func:`ell_R2_max_pp_gap`; the lens identity is recorded separately
+    by :func:`run_configuration` (``R2_under_lens``).
+    """
+    _pw, valid = _phrase_weights(phrases_df, mixture_weights)
+    tech_arr = phrases_df.loc[valid, tech_col].to_numpy()
+    if (tech_arr == "AI").sum() == 0:
+        return float("nan")
+
+    pp_diffs = compute_ai_vs_nonai_pp(
+        phrases_df, mixture_weights, tech_col=tech_col, baseline=baseline
+    )
+    return float(pp_diffs.min())
 def ell_R3_entropy_stability(
     phrases_df: pd.DataFrame,
     tech_col: str = "technology_meta",
@@ -971,6 +995,17 @@ def run_configuration(
     row["ell_R2"] = ell_R2_max_pp_gap(
         bundle["concerns_df"], mixture_weights, baseline=config.baseline
     )
+    row["ell_R2_under"] = ell_R2_min_pp_gap(
+        bundle["concerns_df"], mixture_weights, baseline=config.baseline
+    )
+    if np.isnan(row["ell_R2"]):
+        row["R2_over_lens"] = row["R2_under_lens"] = None
+    else:
+        _pp = compute_ai_vs_nonai_pp(
+            bundle["concerns_df"], mixture_weights, baseline=config.baseline
+        )
+        row["R2_over_lens"] = lens_names[int(np.argmax(_pp))]
+        row["R2_under_lens"] = lens_names[int(np.argmin(_pp))]
     row["ell_R3"] = ell_R3_entropy_stability(bundle["concerns_df"])
 
     return row
