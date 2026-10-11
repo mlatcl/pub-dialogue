@@ -557,7 +557,7 @@ class AddressStage:
                     elif part.strip().startswith("{"):
                         raw = part.strip()
                         break
-                        data = json.loads(raw)
+            data = json.loads(raw)
             for lens in data.get("framing_lenses", []):
                 lens["suggested_clusters"] = [int(c) for c in lens.get("suggested_clusters", [])]
             return data
