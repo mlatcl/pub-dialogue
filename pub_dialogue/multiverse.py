@@ -47,6 +47,17 @@ import numpy as np
 import pandas as pd
 from scipy.stats import entropy as scipy_entropy
 
+from multilogue.soft import (
+    CANONICAL_SUPPORT_BAND,
+    SIGMA2_RULES,
+    mean_n_lenses,
+    select_sigma2_constrained,
+    select_sigma2_hard,
+    select_sigma2_in_band,
+    select_sigma2_one_step_harder,
+    select_sigma2_one_step_softer,
+)
+
 
 # =============================================================================
 # Configuration dataclass
@@ -96,65 +107,9 @@ def enumerate_configurations(dimensions: dict[str, list]) -> list[MultiverseConf
 # inside (0.2, 0.6) × the mean number of lenses.  Without that band the
 # minimum-EMD σ² is the degenerate near-uniform solution, where every cluster
 # belongs almost equally to every lens and AI-vs-non-AI differences vanish.
-CANONICAL_SUPPORT_BAND: tuple[float, float] = (0.2, 0.6)
-
-
-def select_sigma2_in_band(
-    stability_curve: pd.DataFrame,
-    n_lenses: float,
-    band: tuple[float, float] = CANONICAL_SUPPORT_BAND,
-) -> float:
-    """Min-EMD σ² among rows with ``band[0]·n < eff_support < band[1]·n``.
-
-    Falls back to the unconstrained minimum-EMD row if no σ² lies in the
-    band — exactly as ``AddressStage.sigma2_sweep_select`` does.
-    """
-    low, high = band[0] * n_lenses, band[1] * n_lenses
-    inside = stability_curve[
-        (stability_curve["mean_eff_support"] > low)
-        & (stability_curve["mean_eff_support"] < high)
-    ]
-    pool = inside if not inside.empty else stability_curve
-    return float(pool.loc[pool["mean_emd"].idxmin(), "sigma2"])
-
-
-def select_sigma2_constrained(stability_curve: pd.DataFrame, n_lenses: float) -> float:
-    """The canonical rule: band (0.2, 0.6) × n_lenses.  Reproduces 01a's σ²*."""
-    return select_sigma2_in_band(stability_curve, n_lenses, CANONICAL_SUPPORT_BAND)
-
-
-def _neighbour_on_grid(stability_curve: pd.DataFrame, n_lenses: float, step: int) -> float:
-    """σ² *step* grid points away from the canonical choice (clipped to the grid)."""
-    grid = np.sort(stability_curve["sigma2"].to_numpy(dtype=float))
-    canonical = select_sigma2_constrained(stability_curve, n_lenses)
-    i = int(np.argmin(np.abs(grid - canonical)))
-    return float(grid[min(max(i + step, 0), len(grid) - 1)])
-
-
-def select_sigma2_one_step_harder(stability_curve: pd.DataFrame, n_lenses: float) -> float:
-    """Grid point just below the canonical σ² — each cluster spreads over
-    fewer lenses (sharper memberships)."""
-    return _neighbour_on_grid(stability_curve, n_lenses, -1)
-
-
-def select_sigma2_one_step_softer(stability_curve: pd.DataFrame, n_lenses: float) -> float:
-    """Grid point just above the canonical σ² — each cluster spreads over
-    more lenses (softer memberships)."""
-    return _neighbour_on_grid(stability_curve, n_lenses, +1)
-
-
-def select_sigma2_hard(stability_curve: pd.DataFrame, n_lenses: float) -> float:
-    """Smallest σ² swept — effectively hard assignment of each cluster to
-    its best-fitting lens.  A no-smoothing reference point."""
-    return float(stability_curve["sigma2"].min())
-
-
-SIGMA2_RULES: dict[str, Callable[[pd.DataFrame, float], float]] = {
-    "constrained": select_sigma2_constrained,
-    "one_step_harder": select_sigma2_one_step_harder,
-    "one_step_softer": select_sigma2_one_step_softer,
-    "hard": select_sigma2_hard,
-}
+#
+# Shared σ² selection (constrained + neighbour rules + SIGMA2_RULES) lives in
+# multilogue.soft (CIP-0005 / CIP-0006) and is imported at module top.
 
 
 # --- Legacy rules (pre-October 2026). Kept so old results can be reproduced;
@@ -176,11 +131,6 @@ LEGACY_SIGMA2_RULES: dict[str, Callable[[pd.DataFrame, float], float]] = {
     "min_emd": select_sigma2_min_emd,
     "median": select_sigma2_median,
 }
-
-
-def mean_n_lenses(per_run_mappings: list[dict]) -> float:
-    """Mean number of lenses across lens runs — the n in the support band."""
-    return float(np.mean([len(m) for m in per_run_mappings]))
 
 
 # =============================================================================

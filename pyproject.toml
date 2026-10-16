@@ -26,6 +26,7 @@ dependencies = [
     "pot>=0.9",  # Earth Mover's Distance (import ot) used by address.pairwise_mean_emd
     # PDF chunking (CIP-0015 / REQ-0008): externally tested via lynguine documents
     "lynguine[documents] @ git+https://github.com/lawrennd/lynguine.git",
+    "multilogue[distance] @ git+https://github.com/mlatcl/multilogue.git",
 ]
 
 [project.optional-dependencies]
