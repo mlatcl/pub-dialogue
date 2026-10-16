@@ -1,0 +1,8 @@
+# Keep notebook diffs tidy and avoid committing cell outputs.
+# Complements .gitattributes nbstripout filter (filter needs a local
+# `nbstripout --install`; this hook runs for anyone with pre-commit).
+repos:
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.9.1
+    hooks:
+      - id: nbstripout
