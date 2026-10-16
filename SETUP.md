@@ -177,10 +177,11 @@ externally tested PDF chunker, and `multilogue[distance]`). You need a
 working network connection the first time; later installs reuse the cached
 clones.
 
-`pre-commit install` registers an `nbstripout` hook so notebook cell outputs
-are cleared before commit (same pattern as ai-dialogue-formats). That keeps
-diffs small and avoids committing run artefacts. The repo also has a
-`.gitattributes` nbstripout filter; the hook is what most contributors will
+`pre-commit install` registers hooks so notebook cell outputs are cleared
+before commit (`nbstripout`) and staged changes are scanned for API keys /
+secrets (`gitleaks`) — same pattern as ai-dialogue-formats. That keeps diffs
+small and avoids committing run artefacts or keys. The repo also has a
+`.gitattributes` nbstripout filter; the hooks are what most contributors will
 hit after installing pre-commit.
 
 ---
