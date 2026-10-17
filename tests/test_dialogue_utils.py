@@ -728,17 +728,17 @@ class TestVolumeTable:
         })
 
     def test_returns_dataframe(self):
-        result = du._volume_table(self._make_df(), "concern")
+        result = du.volume_table(self._make_df(), "concern")
         assert isinstance(result, pd.DataFrame)
 
     def test_columns_named_by_kind(self):
-        result = du._volume_table(self._make_df(), "concern")
+        result = du.volume_table(self._make_df(), "concern")
         assert "concern_phrases" in result.columns
 
     def test_raises_without_id_column(self):
         df = pd.DataFrame({"technology": ["AI"], "year": [2020]})
         with pytest.raises(ValueError, match="paragraph id column"):
-            du._volume_table(df, "concern")
+            du.volume_table(df, "concern")
 
 
 class TestTopClusters:
@@ -748,18 +748,18 @@ class TestTopClusters:
         })
 
     def test_returns_top_n(self):
-        result = du._top_clusters(self._make_df(), None, "concern", n=2)
+        result = du.top_clusters(self._make_df(), None, "concern", n=2)
         assert len(result) == 2
         assert result.iloc[0]["cluster_id"] == 0  # most frequent
 
     def test_kind_column_inserted(self):
-        result = du._top_clusters(self._make_df(), None, "benefit")
+        result = du.top_clusters(self._make_df(), None, "benefit")
         assert "kind" in result.columns
         assert (result["kind"] == "benefit").all()
 
     def test_merges_labels(self):
         summary = pd.DataFrame({"cluster_id": [0, 1], "label": ["Alpha", "Beta"]})
-        result = du._top_clusters(self._make_df(), summary, "concern")
+        result = du.top_clusters(self._make_df(), summary, "concern")
         assert "label" in result.columns
 
 
