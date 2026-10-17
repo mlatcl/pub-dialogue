@@ -711,8 +711,11 @@ class AddressStage:
         attempt = 0
         while len(all_runs) < n_runs and attempt < max_attempts:
             attempt += 1
-            logger.info("Lens grouping attempt %d (%d of %d done) for kind=%r",
-                        attempt, len(all_runs), n_runs, kind)
+            # Use %s for ints: lynguine.secure_logging may stringify args.
+            logger.info(
+                "Lens grouping attempt %s (%s of %s done) for kind=%r",
+                attempt, len(all_runs), n_runs, kind,
+            )
             try:
                 result = self.generate_lens_grouping(
                     cluster_exemplars, cluster_labels_dict, n_clusters, kind, client,
@@ -720,10 +723,14 @@ class AddressStage:
                 )
                 all_runs.append(result)
             except Exception as exc:
-                logger.warning("Lens grouping attempt %d failed: %r", attempt, exc)
+                logger.warning(
+                    "Lens grouping attempt %s failed: %r", attempt, exc,
+                )
         if len(all_runs) < n_runs:
-            logger.warning("Only %d of %d lens-grouping runs succeeded for kind=%r",
-                           len(all_runs), n_runs, kind)
+            logger.warning(
+                "Only %s of %s lens-grouping runs succeeded for kind=%r",
+                len(all_runs), n_runs, kind,
+            )
 
         if not all_runs:
             raise RuntimeError(f"All {n_runs} lens-grouping runs failed for kind={kind!r}")
@@ -1532,14 +1539,14 @@ def _complete_with_retry(client, messages: list, max_tokens: int, max_retries: i
         except litellm.RateLimitError as exc:
             if attempt == max_retries:
                 logger.warning(
-                    "Rate limit: all %d retries exhausted — giving up.", max_retries
+                    "Rate limit: all %s retries exhausted — giving up.", max_retries
                 )
                 raise
             # Full jitter: spread retries across 0–delay so workers don't pile up
             sleep_for = random.uniform(0, delay)
             logger.debug(
-                "Rate limit: attempt %d/%d, sleeping %.1fs before retry.",
-                attempt + 1, max_retries, sleep_for,
+                "Rate limit: attempt %s/%s, sleeping %ss before retry.",
+                attempt + 1, max_retries, f"{sleep_for:.1f}",
             )
             time.sleep(sleep_for)
             delay = min(delay * 2, 60.0)
