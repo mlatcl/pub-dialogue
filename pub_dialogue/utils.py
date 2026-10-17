@@ -19,8 +19,12 @@ Import convention in notebooks::
 All names can still be imported as before::
 
     from pub_dialogue.utils import (
-        extract_chunks_from_pdf, load_artifacts, extract_phrases, ...
+        load_artifacts, extract_phrases, AccessStage, ...
     )
+
+PDF chunking uses lynguine directly (CIP-0015)::
+
+    from lynguine.access.documents import segment_pdf_frame
 """
 
 from __future__ import annotations
@@ -45,17 +49,9 @@ from pub_dialogue.access import (  # noqa: F401
     SENTENCE_FALLBACK_TARGET_WORDS,
     SENTENCE_FALLBACK_MIN_PARAGRAPHS,
     MIN_TEXT_COVERAGE,
-    MIN_WORDS_PER_PAGE,
+    DEFAULT_SEGMENT_STRATEGY,
+    DEFAULT_ON_SPARSE_TEXT,
     AccessStage,
-    _chunk_stats,
-    reset_chunk_stats,
-    get_chunk_stats,
-    get_doc_diagnostics,
-    _split_into_sentences,
-    _repack_sentences_into_chunks,
-    _extract_paragraphs_from_blocks,
-    _paragraph_split,
-    extract_chunks_from_pdf,
     load_artifacts,
     save_checkpoint,
     load_checkpoint,

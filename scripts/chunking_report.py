@@ -1,15 +1,14 @@
 """
 Pre-flight chunking report — run BEFORE paying for LLM extraction.
 
-Chunks every PDF twice — with the v19 rule (min_text_coverage=0) and with the
-current coverage-based rule — and writes a per-document comparison so you can
-check chunk counts, text coverage and image-only flags before running
-01_processing.  Makes no API calls.
+Segments every PDF with lynguine ``pub_dialogue.v1`` (CIP-0015) and writes a
+per-document summary so you can check chunk counts and sparse-text flags before
+running 01_processing.  Makes no API calls.
 
 Usage (from the repo root):
     python scripts/chunking_report.py                       # data/*.pdf
-    python scripts/chunking_report.py --pdfs data --ocr     # also OCR scans
-    python scripts/chunking_report.py --coverage 0.4 0.5 0.6  # threshold sweep
+    python scripts/chunking_report.py --pdfs data
+    python scripts/chunking_report.py --filter-chrome       # cleaner chrome
 
 Output: outputs/chunking_report.csv (+ a printed summary).
 """
@@ -17,84 +16,120 @@ from __future__ import annotations
 
 import argparse
 import sys
+import warnings
 from pathlib import Path
 
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # run without pip install -e
+from lynguine.access.documents import (  # noqa: E402
+    document_features,
+    read_pdf,
+    segment_pdf_frame,
+)
 from pub_dialogue import access  # noqa: E402
 
 
-def _run(pdfs, **kw) -> pd.DataFrame:
-    access.reset_chunk_stats()
-    for p in pdfs:
-        access.extract_chunks_from_pdf(p, {}, **kw)
-    return access.get_doc_diagnostics()
+def _segment_one(pdf: Path, stage: access.AccessStage) -> dict:
+    root = str(pdf.parent.resolve())
+    kw = stage.segment_kwargs()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        units = segment_pdf_frame(
+            str(pdf),
+            allowed_roots=[root],
+            **kw,
+        )
+    sparse_warn = any("text_layer" in str(w.message) for w in caught)
+
+    feats: dict = {}
+    try:
+        doc = read_pdf(str(pdf), allowed_roots=[root])
+        feats = document_features(doc)
+        text_layer = getattr(doc.text_layer, "value", str(doc.text_layer))
+        pages = len(doc.pages)
+        words_per_page = float(doc.words_per_page)
+        total_words = int(getattr(doc, "total_words", 0) or 0)
+    except Exception as exc:
+        text_layer = "error"
+        pages = 0
+        words_per_page = 0.0
+        total_words = 0
+        feats = {"error": str(exc)}
+
+    methods = (
+        sorted(units["chunking_method"].dropna().unique().tolist())
+        if len(units) and "chunking_method" in units.columns
+        else []
+    )
+    segmentation = (
+        units["segmentation"].iloc[0]
+        if len(units) and "segmentation" in units.columns
+        else None
+    )
+    return {
+        "source_file": pdf.name,
+        "pages": pages,
+        "total_words": total_words or int(feats.get("total_words") or 0),
+        "words_per_page": round(words_per_page or float(feats.get("words_per_page") or 0), 1),
+        "text_layer": text_layer,
+        "sparse_warning": sparse_warn,
+        "chunks_kept": len(units),
+        "words_kept": int(units["word_count"].sum()) if len(units) else 0,
+        "segmentation": segmentation,
+        "methods": ",".join(methods),
+    }
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ap.add_argument("--pdfs", default="data", help="folder of PDFs (default: data)")
     ap.add_argument("--out", default="outputs/chunking_report.csv")
-    ap.add_argument("--coverage", type=float, nargs="+",
-                    default=[access.MIN_TEXT_COVERAGE],
-                    help="min_text_coverage value(s) to test")
-    ap.add_argument("--ocr", action="store_true", help="OCR image-only PDFs")
-    ap.add_argument("--min-chunks", type=int, default=20,
-                    help="flag documents with fewer chunks than this")
+    ap.add_argument(
+        "--filter-chrome",
+        action="store_true",
+        help="pass filter_chrome=True to lynguine (default: False for parity)",
+    )
+    ap.add_argument(
+        "--min-chunks",
+        type=int,
+        default=20,
+        help="flag documents with fewer chunks than this",
+    )
+    ap.add_argument(
+        "--on-sparse-text",
+        default=None,
+        choices=["warn", "error", "empty"],
+        help="override AccessStage.on_sparse_text",
+    )
     args = ap.parse_args()
 
     pdfs = sorted(Path(args.pdfs).glob("*.pdf"))
     if not pdfs:
         raise SystemExit(f"No PDFs found in {Path(args.pdfs).resolve()}")
 
-    old = _run(pdfs, min_text_coverage=0.0)
-    cols = ["source_file", "pages", "total_words", "words_per_page",
-            "likely_image_only", "blocks_coverage", "newline_coverage"]
-    report = old[cols].copy()
-    report["v19_segmentation"] = old["segmentation"]
-    report["v19_chunks"] = old["chunks_kept"]
-    report["v19_coverage"] = old["final_coverage"]
+    stage = access.AccessStage(filter_chrome=args.filter_chrome)
+    if args.on_sparse_text is not None:
+        stage.on_sparse_text = args.on_sparse_text
 
-    for cov in args.coverage:
-        new = _run(pdfs, min_text_coverage=cov, ocr_if_image_only=args.ocr)
-        tag = f"cov{cov:g}"
-        report[f"{tag}_segmentation"] = new["segmentation"].values
-        report[f"{tag}_reason"] = new["fallback_reason"].values
-        report[f"{tag}_chunks"] = new["chunks_kept"].values
-        report[f"{tag}_coverage"] = new["final_coverage"].values
-        report[f"{tag}_ocr"] = new["ocr_applied"].values
-
-    main_tag = f"cov{args.coverage[0]:g}"
-    report["changed"] = report["v19_chunks"] != report[f"{main_tag}_chunks"]
-    report["flag"] = (
-        report["likely_image_only"]
-        | (report[f"{main_tag}_coverage"] < args.coverage[0])
-        | (report[f"{main_tag}_chunks"] < args.min_chunks)
-    )
-    report = report.sort_values(f"{main_tag}_chunks")
+    rows = [_segment_one(p, stage) for p in pdfs]
+    report = pd.DataFrame(rows)
+    report["flag"] = (report["chunks_kept"] < args.min_chunks) | report[
+        "sparse_warning"
+    ] | (report["text_layer"].isin(["absent", "sparse"]))
+    report = report.sort_values("chunks_kept")
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     report.to_csv(args.out, index=False)
 
     pd.set_option("display.width", 200)
-    show = ["source_file", "pages", "words_per_page", "v19_chunks", "v19_coverage",
-            f"{main_tag}_chunks", f"{main_tag}_coverage", f"{main_tag}_reason"]
-    print(f"\n{len(pdfs)} PDFs | v19 chunks: {report['v19_chunks'].sum():,} | "
-          f"{main_tag} chunks: {report[f'{main_tag}_chunks'].sum():,}")
-    print(f"Documents whose chunking changed: {int(report['changed'].sum())}")
-    print("\nChanged documents:")
-    print(report.loc[report["changed"], show].to_string(index=False) or "  (none)")
-    print("\nStill flagged (image-only, low coverage, or few chunks):")
-    print(report.loc[report["flag"], show + ["likely_image_only"]].to_string(index=False)
-          or "  (none)")
-    if len(args.coverage) > 1:
-        print("\nThreshold sweep — total chunks and documents falling back:")
-        for cov in args.coverage:
-            t = f"cov{cov:g}"
-            print(f"  {cov:.2f}: {report[f'{t}_chunks'].sum():,} chunks, "
-                  f"{int((report[f'{t}_reason'] == 'low_coverage').sum())} low-coverage fallbacks")
-    print(f"\nWritten: {args.out}")
+    pd.set_option("display.max_columns", 20)
+    print(report.to_string(index=False))
+    print()
+    print(f"Wrote {args.out} ({len(report)} documents, "
+          f"{int(report['flag'].sum())} flagged)")
 
 
 if __name__ == "__main__":
