@@ -1,7 +1,7 @@
 ---
 id: "2026-10-17_cip0016-verify-ci-green-on-pr"
 title: "CIP-0016: verify CI check appears and passes on a PR"
-status: "Ready"
+status: "Completed"
 priority: "High"
 created: "2026-10-17"
 last_updated: "2026-10-17"
@@ -25,9 +25,9 @@ Push the workflow on a branch (new PR or update to an open PR such as CIP-0015) 
 
 ## Acceptance Criteria
 
-- [ ] A PR shows the new CI check in the GitHub UI
-- [ ] The check passes on a known-good commit (install + pytest)
-- [ ] Failure mode is visible if/when the suite fails (optional smoke: temporary fail then revert)
+- [x] A PR shows the new CI check in the GitHub UI
+- [x] The check passes on a known-good commit (install + pytest)
+- [x] Failure mode is visible if/when the suite fails (optional smoke: temporary fail then revert)
 
 ## Implementation Notes
 
@@ -42,3 +42,7 @@ If CIP-0015 PR #2 is still open, landing the workflow on that branch or a small 
 ### 2026-10-17
 
 Task created (Ready) after CIP-0016 acceptance.
+
+### 2026-10-17 (implementation)
+
+Verified on PR #4: first run failed (missing `pot`); after adding dependency, run 39055475183 passed.
