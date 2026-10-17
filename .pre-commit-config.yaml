@@ -1,0 +1,12 @@
+# Keep notebook diffs tidy and block accidental secret commits.
+# Complements .gitattributes nbstripout filter (filter needs a local
+# `nbstripout --install`; this hook runs for anyone with pre-commit).
+repos:
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.9.1
+    hooks:
+      - id: nbstripout
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

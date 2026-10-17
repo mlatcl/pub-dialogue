@@ -164,12 +164,20 @@ needs:
 
 ```
 pip install -e ".[dev]"
+pre-commit install
 ```
 
 This command reads the list of required packages from `pyproject.toml` and
 downloads them. It may take a few minutes and will print a lot of text —
 that is normal. When it finishes you should see a line like
 `Successfully installed pub-dialogue-0.1.0 ...`.
+
+`pre-commit install` registers hooks so notebook cell outputs are cleared
+before commit (`nbstripout`) and staged changes are scanned for API keys /
+secrets (`gitleaks`) — same pattern as ai-dialogue-formats. That keeps diffs
+small and avoids committing run artefacts or keys. The repo also has a
+`.gitattributes` nbstripout filter; the hooks are what most contributors will
+hit after installing pre-commit.
 
 ---
 
