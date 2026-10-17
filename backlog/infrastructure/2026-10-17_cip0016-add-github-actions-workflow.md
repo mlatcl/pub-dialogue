@@ -1,7 +1,7 @@
 ---
 id: "2026-10-17_cip0016-add-github-actions-workflow"
 title: "CIP-0016: add GitHub Actions workflow for pytest"
-status: "Ready"
+status: "Completed"
 priority: "High"
 created: "2026-10-17"
 last_updated: "2026-10-17"
@@ -28,10 +28,10 @@ Add `.github/workflows/ci.yml` that runs on pull requests to `main` and pushes t
 
 ## Acceptance Criteria
 
-- [ ] Workflow file exists under `.github/workflows/`
-- [ ] Triggers cover `pull_request` and `push` to `main`
-- [ ] Job installs the package with the `dev` extra and runs pytest
-- [ ] Job does not require corpus PDFs or OpenAI credentials
+- [x] Workflow file exists under `.github/workflows/`
+- [x] Triggers cover `pull_request` and `push` to `main`
+- [x] Job installs the package with the `dev` extra and runs pytest
+- [x] Job does not require corpus PDFs or OpenAI credentials
 
 ## Implementation Notes
 
@@ -46,3 +46,7 @@ Keep a single Python version for v1. Use `actions/checkout` and `actions/setup-p
 ### 2026-10-17
 
 Task created (Ready) after CIP-0016 acceptance.
+
+### 2026-10-17 (implementation)
+
+Completed on branch cip0016-github-actions-ci.

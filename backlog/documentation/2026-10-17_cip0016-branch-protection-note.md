@@ -1,7 +1,7 @@
 ---
 id: "2026-10-17_cip0016-branch-protection-note"
 title: "CIP-0016: document required status check for main"
-status: "Ready"
+status: "Completed"
 priority: "Low"
 created: "2026-10-17"
 last_updated: "2026-10-17"
@@ -25,8 +25,8 @@ Document for maintainers that once CI is green, the pytest workflow job should b
 
 ## Acceptance Criteria
 
-- [ ] CIP-0016 or SETUP/README includes a short maintainer note about requiring the CI check on `main`
-- [ ] Job/check name to require is identified (matches the workflow `name` / job `name`)
+- [x] CIP-0016 or SETUP/README includes a short maintainer note about requiring the CI check on `main`
+- [x] Job/check name to require is identified (matches the workflow `name` / job `name`)
 
 ## Implementation Notes
 
@@ -41,3 +41,7 @@ Do not block CIP closure solely on org admin access. Recording the intended sett
 ### 2026-10-17
 
 Task created (Ready) after CIP-0016 acceptance.
+
+### 2026-10-17 (implementation)
+
+Completed on branch cip0016-github-actions-ci.

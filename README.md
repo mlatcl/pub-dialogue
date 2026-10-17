@@ -95,7 +95,17 @@ Run notebooks in order, starting with `01_processing.ipynb` to build the artefac
 cache. Subsequent notebooks (`01a`, `02`–`05`) load pre-computed artefacts and do
 not call the LLM.
 
+## Continuous integration
+
+Pull requests and pushes to `main` run a GitHub Actions job (`CI` / `pytest`)
+that installs the package with `pip install -e ".[dev]"` and runs `pytest` in a
+clean environment. No PDF corpus or API keys are required. Maintainers should
+mark the `pytest` job as a required status check on `main` once it is green
+(branch protection).
+
 ## Running tests
+
+Locally, use the same commands as CI:
 
 ```bash
 pytest tests/ -v
