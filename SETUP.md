@@ -171,6 +171,10 @@ downloads them. It may take a few minutes and will print a lot of text —
 that is normal. When it finishes you should see a line like
 `Successfully installed pub-dialogue-0.1.0 ...`.
 
+One dependency is installed from GitHub (`lynguine[documents]`, which
+provides the externally tested PDF chunker). You need a working network
+connection the first time; later installs reuse the cached clone.
+
 ---
 
 ## Step 7 — Get an OpenAI API key

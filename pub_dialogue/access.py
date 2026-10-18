@@ -1,42 +1,52 @@
 """
-pub_dialogue.access — Data access stage: PDF ingestion, chunking, and artefact loading.
+pub_dialogue.access — Data access stage: paths, artefact loading, chunking config.
 
-This module owns everything that brings raw data into digital form: reading PDF files,
-splitting text into paragraph chunks, and loading pre-computed artefacts from disk for
-downstream analysis notebooks.  It has no dependency on the research question and makes
-no LLM calls.
+This module owns everything that brings analysis inputs into a usable form for
+downstream notebooks: path/config for PDF folders and outputs, and loading
+pre-computed artefacts from disk.  It has no dependency on the research
+question and makes no LLM calls.
+
+PDF text units are **not** segmented here.  Call lynguine’s document access
+API directly (CIP-0015 / REQ-0008)::
+
+    from lynguine.access.documents import segment_pdf_frame
+
+    units = segment_pdf_frame(
+        str(pdf_path),
+        strategy=access.AccessStage().strategy,  # "pub_dialogue.v1"
+        aspect="body_chunks",
+        allowed_roots=[str(pdf_folder.resolve())],
+        min_chunk_words=40,
+        min_chunk_chars=80,
+        max_chunk_words=500,
+        on_sparse_text="warn",
+    )
+    # Join research metadata (technology, year) after segmentation.
 
 Public API:
-  Stage class (CIP-0010):
+  Stage class (CIP-0010 / CIP-0015):
     AccessStage — typed config dataclass; use AccessStage() in notebook setup cells
-  Chunking:
-    extract_chunks_from_pdf
-    reset_chunk_stats, get_chunk_stats
   I/O:
     load_artifacts, save_checkpoint, load_checkpoint
-  Private helpers:
-    _extract_paragraphs_from_blocks, _paragraph_split
-    _split_into_sentences, _repack_sentences_into_chunks
 
-Constants:
+Constants (defaults passed through to lynguine ``pub_dialogue.v1``):
   MIN_CHUNK_WORDS, MIN_CHUNK_CHARS, MAX_CHUNK_WORDS
   SENTENCE_FALLBACK_TARGET_WORDS, SENTENCE_FALLBACK_MIN_PARAGRAPHS
-
+  MIN_TEXT_COVERAGE, DEFAULT_SEGMENT_STRATEGY, DEFAULT_ON_SPARSE_TEXT
 """
 
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
 
 # ---------------------------------------------------------------------------
-# Chunking constants — match v19 notebook configuration
+# Chunking defaults — match lynguine pub_dialogue.v1 / prior v19 config
 # ---------------------------------------------------------------------------
 
 MIN_CHUNK_WORDS: int = 40
@@ -44,27 +54,22 @@ MIN_CHUNK_CHARS: int = 80
 MAX_CHUNK_WORDS: int = 500
 SENTENCE_FALLBACK_TARGET_WORDS: int = 300
 SENTENCE_FALLBACK_MIN_PARAGRAPHS: int = 3
-# Paragraph segmentation is only accepted if the substantive paragraphs it
-# keeps (those passing the word/char floors) contain at least this fraction
-# of the document's words.  Below it, the PDF is fragmenting into short
-# pieces (one per line/bullet/table cell) that the floor would discard, so the
-# whole document is sentence-split and repacked instead.  Calibrate with
-# scripts/chunking_report.py before changing.
 MIN_TEXT_COVERAGE: float = 0.5
-# Documents with fewer extractable words per page than this are flagged as
-# likely image-only (scanned) PDFs that need OCR.
-MIN_WORDS_PER_PAGE: int = 30
+DEFAULT_SEGMENT_STRATEGY: str = "pub_dialogue.v1"
+DEFAULT_ON_SPARSE_TEXT: str = "warn"
+
 # ---------------------------------------------------------------------------
-# AccessStage — typed config dataclass (CIP-0010 Phase 1)
+# AccessStage — typed config dataclass (CIP-0010 / CIP-0015)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class AccessStage:
     """Configuration and entry-point for the Access pipeline stage.
 
-    Centralises all path and chunking constants that were previously repeated
-    in every notebook setup cell.  All existing module-level functions remain
-    unchanged; this class delegates to them.
+    Centralises path and lynguine chunking knobs that were previously repeated
+    in every notebook setup cell.  PDF segmentation is performed by calling
+    ``lynguine.access.documents.segment_pdf_frame`` with these fields — this
+    class does not wrap or re-implement the chunker.
 
     Usage in notebook setup cells::
 
@@ -76,369 +81,37 @@ class AccessStage:
     output_folder: Path = field(default_factory=lambda: Path("outputs"))
     checkpoint_folder: Path = field(default_factory=lambda: Path("checkpoints"))
     pdf_folder: Path = field(default_factory=lambda: Path("pdfs"))
+    strategy: str = DEFAULT_SEGMENT_STRATEGY
+    on_sparse_text: str = DEFAULT_ON_SPARSE_TEXT
     min_chunk_words: int = MIN_CHUNK_WORDS
     max_chunk_words: int = MAX_CHUNK_WORDS
     min_chunk_chars: int = MIN_CHUNK_CHARS
+    sentence_fallback_target_words: int = SENTENCE_FALLBACK_TARGET_WORDS
+    sentence_fallback_min_paragraphs: int = SENTENCE_FALLBACK_MIN_PARAGRAPHS
     min_text_coverage: float = MIN_TEXT_COVERAGE
-    min_words_per_page: int = MIN_WORDS_PER_PAGE
-    ocr_if_image_only: bool = False
+    filter_chrome: bool = False
 
     def load_artifacts(self) -> dict:
         """Load pre-computed artefacts from output_folder and checkpoint_folder."""
         return load_artifacts(self.output_folder, self.checkpoint_folder)
 
+    def segment_kwargs(self) -> Dict[str, Any]:
+        """Keyword arguments for ``segment_pdf`` / ``segment_pdf_frame``.
 
-# ---------------------------------------------------------------------------
-# Chunk statistics accumulator
-# ---------------------------------------------------------------------------
-
-# Module-level accumulator; reset between pipeline runs with reset_chunk_stats().
-_chunk_stats: Dict[str, int] = {
-    "paragraphs_seen": 0,
-    "paragraphs_kept": 0,
-    "paragraphs_truncated": 0,
-    "paragraphs_below_word_floor": 0,
-    "paragraphs_below_char_floor": 0,
-    "paragraphs_empty": 0,
-    "documents_paragraph_only": 0,
-    "documents_paragraph_with_split": 0,
-    "documents_sentence_fallback": 0,
-    "oversized_paragraphs_split": 0,
-    "chunks_from_sentence_split": 0,
-    "chunks_from_sentence_fallback": 0,
-    "documents_blocks_primary": 0,
-    "documents_text_newline_primary": 0,
-    "documents_low_coverage_fallback": 0,
-    "documents_likely_image_only": 0,
-    "documents_ocr_applied": 0,
-}
-
-# Per-document diagnostics from the most recent run (reset with the stats).
-_doc_diagnostics: List[Dict[str, Any]] = []
-
-
-def reset_chunk_stats() -> None:
-    """Reset the module-level chunk statistics accumulator to zero."""
-    for key in _chunk_stats:
-        _chunk_stats[key] = 0
-    _doc_diagnostics.clear()
-
-
-def get_chunk_stats() -> Dict[str, int]:
-    """Return a copy of the current chunk statistics accumulator."""
-    return dict(_chunk_stats)
-
-
-def get_doc_diagnostics() -> pd.DataFrame:
-    """Per-document chunking diagnostics accumulated since the last reset.
-
-    One row per PDF: pages, total words, words per page, which segmentation
-    was used, the text coverage of each candidate segmentation, chunks kept,
-    words kept, final coverage, and whether the PDF looks image-only.
-    """
-    return pd.DataFrame(_doc_diagnostics)
-
-
-def _word_count(text: str) -> int:
-    return len(text.split())
-
-
-def _coverage(paragraphs: List[str], total_words: int,
-              min_chunk_words: int, min_chunk_chars: int) -> float:
-    """Fraction of the document's words that sit in substantive paragraphs."""
-    if total_words == 0:
-        return 0.0
-    kept = sum(
-        _word_count(p) for p in paragraphs
-        if _word_count(p) >= min_chunk_words and len(p) >= min_chunk_chars
-    )
-    return kept / total_words
-
-
-def _ocr_text(doc, language: str = "eng", dpi: int = 300) -> str:
-    """OCR every page with PyMuPDF's Tesseract bridge; returns '' on failure."""
-    parts = []
-    for page in doc:
-        try:
-            tp = page.get_textpage_ocr(language=language, dpi=dpi, full=True)
-            parts.append(page.get_text(textpage=tp))
-        except Exception as exc:  # Tesseract missing / tessdata not found
-            print(f"  OCR unavailable ({exc}); skipping OCR.")
-            return ""
-    return "\n\n".join(parts)
-
-
-# ---------------------------------------------------------------------------
-# Private chunking helpers
-# ---------------------------------------------------------------------------
-
-def _split_into_sentences(text: str) -> List[str]:
-    """Split *text* into sentences. Collapses whitespace first."""
-    text = re.sub(r"\s+", " ", text).strip()
-    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z\d])", text)
-    return [p.strip() for p in parts if p.strip()]
-
-
-def _repack_sentences_into_chunks(sentences: List[str], target_words: int) -> List[str]:
-    """Greedily repack *sentences* into chunks of approximately *target_words* words."""
-    chunks: List[str] = []
-    current: List[str] = []
-    current_words = 0
-    for sent in sentences:
-        sent_words = len(sent.split())
-        if sent_words >= target_words:
-            if current:
-                chunks.append(" ".join(current))
-                current = []
-                current_words = 0
-            chunks.append(sent)
-            continue
-        if current_words + sent_words > target_words and current:
-            chunks.append(" ".join(current))
-            current = [sent]
-            current_words = sent_words
-        else:
-            current.append(sent)
-            current_words += sent_words
-    if current:
-        chunks.append(" ".join(current))
-    return chunks
-
-
-def _extract_paragraphs_from_blocks(doc) -> List[str]:
-    """Layout-aware paragraph extraction using PyMuPDF's block detection.
-
-    Each text block identified by PyMuPDF (``page.get_text("blocks")``) is
-    treated as one paragraph candidate.  This uses the PDF's geometry — gaps
-    between runs of text — rather than relying on ``\\n\\n`` being present in
-    the text stream.  Works for PDFs where paragraph breaks are implicit in the
-    layout but not encoded as double-newlines.
-
-    Block tuples: ``(x0, y0, x1, y1, text, block_no, block_type)``
-    ``block_type == 0`` means text; ``block_type == 1`` means image.
-
-    Returns a list of non-empty, whitespace-normalised paragraph strings.
-    """
-    paragraphs = []
-    for page in doc:
-        for block in page.get_text("blocks"):
-            if block[6] != 0:  # skip image blocks
-                continue
-            text = re.sub(r"\s+", " ", block[4]).strip()
-            if text:
-                paragraphs.append(text)
-    return paragraphs
-
-
-def _paragraph_split(full_text: str) -> List[str]:
-    """Split *full_text* on double-newlines; return non-empty cleaned paragraphs."""
-    paragraphs = re.split(r"\n\s*\n", full_text)
-    out = []
-    for para in paragraphs:
-        para = re.sub(r"\s+", " ", para).strip()
-        if para:
-            out.append(para)
-    return out
-
-
-# ---------------------------------------------------------------------------
-# PDF chunk extraction
-# ---------------------------------------------------------------------------
-
-def extract_chunks_from_pdf(
-    pdf_path: Path,
-    metadata: Dict[str, Any],
-    min_chunk_words: int = MIN_CHUNK_WORDS,
-    min_chunk_chars: int = MIN_CHUNK_CHARS,
-    max_chunk_words: int = MAX_CHUNK_WORDS,
-    sentence_fallback_target_words: int = SENTENCE_FALLBACK_TARGET_WORDS,
-    sentence_fallback_min_paragraphs: int = SENTENCE_FALLBACK_MIN_PARAGRAPHS,
-    min_text_coverage: float = MIN_TEXT_COVERAGE,
-    min_words_per_page: int = MIN_WORDS_PER_PAGE,
-    ocr_if_image_only: bool = False,
-    ocr_language: str = "eng",
-) -> List[Dict[str, Any]]:
-    """Extract text chunks from one PDF (see module docs for the three cases).
-
-    Paragraph mode is used only if the substantive paragraphs hold at least
-    *min_text_coverage* of the document's words; otherwise the whole text is
-    sentence-split and repacked.  PDFs with fewer than *min_words_per_page*
-    words per page are flagged as image-only (OCR'd if *ocr_if_image_only*).
-    """
-    try:
-        import fitz  # type: ignore  # PyMuPDF
-    except ImportError as exc:
-        raise ImportError("PyMuPDF (fitz) is required for PDF extraction.") from exc
-
-    chunks: List[Dict[str, Any]] = []
-    diag: Dict[str, Any] = {"source_file": Path(pdf_path).name}
-
-    def _n_substantive(paras: List[str]) -> int:
-        return sum(
-            1 for p in paras
-            if _word_count(p) >= min_chunk_words and len(p) >= min_chunk_chars
-        )
-
-    def _acceptable(paras: List[str], coverage: float) -> bool:
-        return (_n_substantive(paras) >= sentence_fallback_min_paragraphs
-                and coverage >= min_text_coverage)
-
-    try:
-        doc = fitz.open(pdf_path)
-        try:
-            n_pages = len(doc)
-        except TypeError:  # mocked documents in tests
-            n_pages = 1
-
-        block_paragraphs = _extract_paragraphs_from_blocks(doc)
-        full_text = "".join(page.get_text() for page in doc)
-        total_words = _word_count(full_text)
-        words_per_page = total_words / max(1, n_pages)
-        likely_image_only = words_per_page < min_words_per_page
-        ocr_applied = False
-
-        if likely_image_only:
-            _chunk_stats["documents_likely_image_only"] += 1
-            print(f"Warning: {Path(pdf_path).name} has {words_per_page:.0f} "
-                  f"extractable words/page — likely image-only (needs OCR).")
-            if ocr_if_image_only:
-                ocr_text = _ocr_text(doc, language=ocr_language)
-                if _word_count(ocr_text) > total_words:
-                    full_text = ocr_text
-                    total_words = _word_count(full_text)
-                    block_paragraphs = []  # OCR text has no layout blocks
-                    ocr_applied = True
-                    _chunk_stats["documents_ocr_applied"] += 1
-        doc.close()
-
-        block_cov = _coverage(block_paragraphs, total_words,
-                              min_chunk_words, min_chunk_chars)
-        newline_paragraphs = _paragraph_split(full_text)
-        newline_cov = _coverage(newline_paragraphs, total_words,
-                                min_chunk_words, min_chunk_chars)
-
-        # Choose a segmentation.  A candidate is acceptable if it has enough
-        # substantive paragraphs AND they hold enough of the document's text.
-        # A candidate that has enough paragraphs but too little coverage is
-        # "rejected for coverage" — the case v19 silently let through.
-        def _enough(paras: List[str]) -> bool:
-            return _n_substantive(paras) >= sentence_fallback_min_paragraphs
-
-        candidates = [("blocks", block_paragraphs, block_cov),
-                      ("newline", newline_paragraphs, newline_cov)]
-        chosen = next(((n, p, c) for n, p, c in candidates if _acceptable(p, c)), None)
-        rejected_for_coverage = any(
-            _enough(p) and c < min_text_coverage for _, p, c in candidates
-        )
-
-        if chosen is not None:
-            segmentation, paragraphs, _ = chosen
-            fallback_reason = None
-            key = ("documents_blocks_primary" if segmentation == "blocks"
-                   else "documents_text_newline_primary")
-            _chunk_stats[key] += 1
-        else:
-            segmentation, paragraphs = "sentence", []
-            fallback_reason = ("low_coverage" if rejected_for_coverage
-                               else "too_few_paragraphs")
-            if rejected_for_coverage:
-                _chunk_stats["documents_low_coverage_fallback"] += 1
-
-        low_coverage = fallback_reason == "low_coverage"
-
-        diag.update({
-            "pages": n_pages,
-            "total_words": total_words,
-            "words_per_page": round(words_per_page, 1),
-            "likely_image_only": likely_image_only,
-            "ocr_applied": ocr_applied,
-            "blocks_coverage": round(block_cov, 3),
-            "newline_coverage": round(newline_cov, 3),
-            "fallback_reason": fallback_reason,
-        })
-
-        if segmentation == "sentence":
-            # Case 3: full sentence-level fallback
-            _chunk_stats["documents_sentence_fallback"] += 1
-            sentences = _split_into_sentences(full_text)
-            packed = _repack_sentences_into_chunks(sentences, sentence_fallback_target_words)
-            chunk_inputs: List[tuple] = [(c, "sentence_fallback") for c in packed]
-            _chunk_stats["chunks_from_sentence_fallback"] += len(chunk_inputs)
-        else:
-            # Cases 1 and 2: paragraph-mode
-            chunk_inputs = []
-            any_split = False
-            for para in paragraphs:
-                para = re.sub(r"\s+", " ", para).strip()
-                if not para:
-                    continue
-                if len(para.split()) > max_chunk_words:
-                    sentences = _split_into_sentences(para)
-                    sub_chunks = _repack_sentences_into_chunks(
-                        sentences, sentence_fallback_target_words
-                    )
-                    for sc in sub_chunks:
-                        chunk_inputs.append((sc, "sentence_split"))
-                    _chunk_stats["oversized_paragraphs_split"] += 1
-                    _chunk_stats["chunks_from_sentence_split"] += len(sub_chunks)
-                    any_split = True
-                else:
-                    chunk_inputs.append((para, "paragraph"))
-
-            if any_split:
-                _chunk_stats["documents_paragraph_with_split"] += 1
-            else:
-                _chunk_stats["documents_paragraph_only"] += 1
-
-        for i, (text, method) in enumerate(chunk_inputs):
-            text = re.sub(r"\s+", " ", text).strip()
-            _chunk_stats["paragraphs_seen"] += 1
-
-            if not text:
-                _chunk_stats["paragraphs_empty"] += 1
-                continue
-            if len(text.split()) < min_chunk_words:
-                _chunk_stats["paragraphs_below_word_floor"] += 1
-                continue
-            if len(text) < min_chunk_chars:
-                _chunk_stats["paragraphs_below_char_floor"] += 1
-                continue
-
-            words = text.split()
-            was_truncated = False
-            if len(words) > max_chunk_words:
-                text = " ".join(words[:max_chunk_words])
-                was_truncated = True
-                _chunk_stats["paragraphs_truncated"] += 1
-
-            chunks.append({
-                "text": text,
-                "source_file": Path(pdf_path).name,
-                "chunk_index": i,
-                "word_count": len(text.split()),
-                "was_truncated": was_truncated,
-                "chunking_method": method,
-                "technology": metadata.get("technology", "Unknown"),
-                "technology_meta": metadata.get("technology", "Unknown"),
-                "year": metadata.get("year", None),
-            })
-            _chunk_stats["paragraphs_kept"] += 1
-
-        words_kept = sum(c["word_count"] for c in chunks)
-        diag.update({
-            "segmentation": segmentation,
-            "low_coverage_fallback": low_coverage,
-            "chunks_kept": len(chunks),
-            "words_kept": words_kept,
-            "final_coverage": round(words_kept / total_words, 3) if total_words else 0.0,
-        })
-
-    except Exception as e:
-        print(f"Error processing {Path(pdf_path).name}: {e}")
-        diag["error"] = str(e)
-
-    _doc_diagnostics.append(diag)
-    return chunks
+        Does not include ``path`` or ``allowed_roots`` (caller-specific).
+        """
+        return {
+            "strategy": self.strategy,
+            "aspect": "body_chunks",
+            "on_sparse_text": self.on_sparse_text,
+            "min_chunk_words": self.min_chunk_words,
+            "min_chunk_chars": self.min_chunk_chars,
+            "max_chunk_words": self.max_chunk_words,
+            "sentence_fallback_target_words": self.sentence_fallback_target_words,
+            "sentence_fallback_min_paragraphs": self.sentence_fallback_min_paragraphs,
+            "min_text_coverage": self.min_text_coverage,
+            "filter_chrome": self.filter_chrome,
+        }
 
 
 # ---------------------------------------------------------------------------

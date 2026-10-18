@@ -3,7 +3,7 @@ pub_dialogue — Public Dialogue Analyser shared utilities and pipeline.
 
 The package is organised around the access / assess / address pipeline framework:
 
-* :mod:`pub_dialogue.access`  — PDF ingestion, chunking, artefact loading.
+* :mod:`pub_dialogue.access`  — paths, artefact loading, chunking config (PDF units via lynguine).
 * :mod:`pub_dialogue.assess`  — Question-agnostic data quality and diagnostics.
 * :mod:`pub_dialogue.address` — LLM extraction, embeddings, clustering, analysis.
 * :mod:`pub_dialogue.utils`   — Shared helpers + backward-compatibility re-exports.
@@ -20,6 +20,8 @@ Import convention in notebooks::
 Key names are also available directly from this package::
 
     from pub_dialogue import normalized_entropy, load_artifacts, extract_phrases
+
+PDF text units: ``from lynguine.access.documents import segment_pdf_frame`` (CIP-0015).
 """
 
 __version__ = "0.1.0"
@@ -46,10 +48,6 @@ from pub_dialogue.utils import (  # noqa: F401
     save_checkpoint,
     load_checkpoint,
     load_artifacts,
-    extract_chunks_from_pdf,
-    reset_chunk_stats,
-    get_chunk_stats,
-    get_doc_diagnostics,
     # Address-stage extraction
     ExtractionResult,
     extract_phrases,
@@ -85,7 +83,8 @@ from pub_dialogue.utils import (  # noqa: F401
     SENTENCE_FALLBACK_TARGET_WORDS,
     SENTENCE_FALLBACK_MIN_PARAGRAPHS,
     MIN_TEXT_COVERAGE,
-    MIN_WORDS_PER_PAGE,
+    DEFAULT_SEGMENT_STRATEGY,
+    DEFAULT_ON_SPARSE_TEXT,
     EXTRACTION_PROMPT,
     BENEFIT_EXTRACTION_PROMPT,
 )
