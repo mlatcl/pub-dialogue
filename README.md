@@ -3,7 +3,7 @@
 ## What this project does
 
 This project applies large language model (LLM) text extraction and unsupervised
-clustering to a corpus of 66 UK public dialogue reports, spanning 2004–2025 and
+clustering to a corpus of 71 UK public dialogue reports, spanning 2004–2026 and
 covering technologies including AI, gene editing, nanotechnology, nuclear energy,
 geoengineering, drones, and quantum technologies.
 
@@ -27,7 +27,7 @@ science and technology in the UK.
 
 ## Data
 
-The corpus consists of 66 publicly available UK public dialogue reports:
+The corpus consists of 71 publicly available UK public dialogue reports:
 
 - **PDFs**: [Public dialogue PDFs on Google Drive](https://drive.google.com/drive/folders/1WhTZE4kaNO5rBikDgNVsTe1INpdzNEJt?usp=sharing)
 - **Metadata**: [tech_metadata Google Sheet](https://docs.google.com/spreadsheets/d/1fWE5Agm4LStCcZZQqvmgamIanhYyfrcb/edit?usp=share_link) — maps each PDF to its technology category and year
